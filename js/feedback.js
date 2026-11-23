@@ -11,7 +11,7 @@ async function callGeminiJson({ apiKey, model, prompt, responseMimeType = 'appli
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
         responseMimeType,
-        temperature: 0.4,
+        temperature: 0.45,
       },
     }),
   });
@@ -46,43 +46,102 @@ function formatTranscriptForPrompt(transcript, maxTurns = 80) {
     .join('\n');
 }
 
-export async function requestSpeakingHints({ apiKey, model, transcript, tutorName, levelLabel, textbookTitle }) {
-  const recent = formatTranscriptForPrompt(transcript, 8);
-  const prompt = `You are helping a Korean elementary school English learner (${levelLabel}) during a live video call with native tutor ${tutorName}.
-${textbookTitle ? `Current Lesson Textbook: ${textbookTitle}` : ''}
-Based on the recent conversation below, suggest 3 natural, kid-friendly spoken English replies the student can say right now.
+/**
+ * Parent Admin Feature: AI 4-Page Custom Textbook Generator
+ * Instantly creates a structured 20-minute interactive ESL textbook on ANY topic!
+ */
+export async function generateAiTextbook({ apiKey, model, topic, grade }) {
+  const isG6 = grade === 'grade6';
+  const targetDesc = isG6
+    ? 'capable Korean 6th grader (CEFR B1–B1+, smart pre-teen, loves reading, opinions, debates, and idioms)'
+    : 'bright Korean 3rd grader (CEFR A1+–A2, loves storytelling, roleplays, clear vocabulary, and fun missions)';
 
-Recent conversation:
-${recent || '(Call just started — suggest 3 friendly opening lines)'}
+  const prompt = `Create a complete, engaging 4-page 20-minute 1-on-1 ESL video class textbook unit about: "${topic}".
+Target learner: ${targetDesc}.
 
-Return strictly valid JSON with this shape:
+Return strictly valid JSON with this exact schema:
 {
-  "hints": [
-    {
-      "english": "Natural spoken English sentence appropriate for the student's level",
-      "korean": "쉬운 한국어 뜻",
-      "nuance": "짧은 활용 팁 (한국어 15자 내외)"
-    }
+  "title": "Catchy English unit title (max 6 words)",
+  "titleKo": "짧고 매력적인 한국어 부제",
+  "category": "스토리텔링 | 역할극 | 리딩 · 토론 | 과학 · 탐험 | 일상 회화 중 택1",
+  "description": "부모님이 보기 좋은 1문장 한국어 교재 소개",
+  "vocab": [
+    { "word": "word1", "meaning": "한국어 뜻", "example": "Short clear English example sentence." }
+  ],
+  "readingTitle": "Fun short story or article title",
+  "readingParagraphs": [
+    "Paragraph 1 (2-3 crisp sentences suitable for reading aloud).",
+    "Paragraph 2 (2-3 crisp sentences suitable for reading aloud).",
+    "Paragraph 3 (1-2 engaging sentences)."
+  ],
+  "questions": [
+    "Open-ended speaking question 1?",
+    "Open-ended speaking question 2?",
+    "Personal connection or 'Why?' question 3?",
+    "Creative 'What if...' question 4?"
+  ],
+  "missions": [
+    { "label": "Step 1 · 짧은 한국어 라벨", "detail": "Clear English speaking task prompt" },
+    { "label": "Step 2 · 짧은 한국어 라벨", "detail": "Clear English speaking task prompt" }
   ]
-}`;
-
-  return callGeminiJson({ apiKey, model, prompt });
 }
 
-export async function translateUtterance({ apiKey, model, text }) {
-  const prompt = `Translate this spoken English sentence from a native tutor into easy, natural Korean for an elementary student, and note 1-2 useful expressions if any.
+Rules:
+- Exactly 5 useful spoken vocabulary items in "vocab".
+- Keep reading vivid, kid-safe, and fun to read aloud.
+- Questions must encourage full-sentence speaking (avoid yes/no-only traps).`;
 
-Sentence: "${text}"
+  const raw = await callGeminiJson({ apiKey, model, prompt });
+  const coverPool = isG6
+    ? ['assets/book_future_school.jpg', 'assets/book_london_vlog.jpg']
+    : ['assets/book_magic_zoo.jpg', 'assets/book_sunny_cafe.jpg'];
+  const cover = coverPool[Math.floor(Math.random() * coverPool.length)];
 
-Return strictly valid JSON:
-{
-  "korean": "자연스럽고 이해하기 쉬운 한국어 번역",
-  "notes": [
-    { "expression": "영문 표현", "meaning": "한국어 의미" }
-  ]
-}`;
-
-  return callGeminiJson({ apiKey, model, prompt });
+  return {
+    id: `ai_book_${Date.now()}`,
+    isAiGenerated: true,
+    grade,
+    gradeTag: isG6 ? '초6 · AI 맞춤 교재' : '초3 · AI 맞춤 교재',
+    levelRange: isG6 ? 'Lv.3–4' : 'Lv.1–2',
+    category: raw.category || 'AI 맞춤 교재',
+    title: raw.title || topic,
+    titleKo: raw.titleKo || topic,
+    cover,
+    description: raw.description || `"${topic}" 주제로 AI가 생성한 4쪽 화상영어 맞춤 교재입니다.`,
+    pages: [
+      {
+        step: 'Page 1 · Warm-up Words',
+        heading: '오늘의 핵심 단어',
+        image: cover,
+        instructionKo: '단어를 소리 내어 읽어보고, 선생님의 질문에 완전한 영어 문장으로 대답해 보세요.',
+        vocab: Array.isArray(raw.vocab) ? raw.vocab.slice(0, 6) : [],
+        teacherNotes: 'Practice pronouncing each word and ask the student to use 1–2 words in a short sentence.',
+      },
+      {
+        step: 'Page 2 · Story & Reading',
+        heading: raw.readingTitle || '함께 읽기',
+        image: cover,
+        instructionKo: '선생님과 번갈아 가며 지문을 소리 내어 읽어 보세요.',
+        readingTitle: raw.readingTitle || raw.title,
+        readingParagraphs: Array.isArray(raw.readingParagraphs) ? raw.readingParagraphs : [],
+        teacherNotes: 'Have the student read aloud and praise clear expression.',
+      },
+      {
+        step: 'Page 3 · Think & Speak',
+        heading: '생각하고 영어로 말하기',
+        instructionKo: '단답 대신 이유를 붙여 완전한 영어 문장으로 대답해 보세요!',
+        questions: Array.isArray(raw.questions) ? raw.questions : [],
+        teacherNotes: 'Ask one question at a time. Always nudge short answers into full sentences.',
+      },
+      {
+        step: 'Page 4 · Speaking Mission',
+        heading: '오늘의 말하기 미션!',
+        instructionKo: '오늘 배운 표현을 활용해서 마지막 미션을 완성해 보세요!',
+        missionCards: Array.isArray(raw.missions) ? raw.missions : [],
+        teacherNotes: 'Run this creative mission so the student speaks most of the time, and award a Gold Star!',
+      },
+    ],
+  };
 }
 
 export async function generateStudyReport({
@@ -112,7 +171,7 @@ Analyze the student's spoken English thoughtfully (praising strengths warmly whi
 Return strictly valid JSON with this exact structure:
 {
   "headline": "아이에게 칭찬과 성취감을 주는 오늘의 수업 한 줄 요약 (한국어)",
-  "praiseBadge": "오늘의 칭찬 타이틀 (예: 자신감 넘치는 스토리텔러 / 논리적인 미니 토론왕)",
+  "praiseBadge": "오늘의 칭찬 타이틀 (예: 완전한 문장 챌린지 성공 / 논리적인 미니 토론왕)",
   "summary": "학부모와 아이가 함께 읽기 좋은 따뜻한 한국어 총평 — 잘한 점 2가지와 다음 성장 포인트 1가지 포함 (3~4문장)",
   "scores": {
     "fluency": 82,
@@ -160,9 +219,7 @@ export function reportToMarkdown(session) {
   ];
 
   if (r) {
-    if (r.praiseBadge) {
-      lines.push(`> **오늘의 칭찬 배지**: ${r.praiseBadge}`, '');
-    }
+    if (r.praiseBadge) lines.push(`> **오늘의 칭찬 배지**: ${r.praiseBadge}`, '');
     lines.push(`## 총평: ${r.headline || ''}`, '', r.summary || '', '');
 
     if (r.scores) {
@@ -195,9 +252,7 @@ export function reportToMarkdown(session) {
       lines.push('');
     }
 
-    if (r.nextTopic) {
-      lines.push('## 다음 수업 추천 & 복습 미션', '', r.nextTopic, '');
-    }
+    if (r.nextTopic) lines.push('## 다음 수업 추천 & 복습 미션', '', r.nextTopic, '');
   }
 
   if (Array.isArray(session.transcript) && session.transcript.length > 0) {

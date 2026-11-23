@@ -1,4 +1,4 @@
-import { TEXTBOOKS } from './textbooks.js';
+import { getAllTextbooks } from './textbooks.js';
 import { LEVELS, STUDENT_PRESETS } from './tutors.js';
 import { LEVEL_TEST_QUESTIONS, evaluateLevelTest } from './level-test.js';
 import {
@@ -509,17 +509,26 @@ export function createAcademyPages({
 
     renderDashboardChart(filtered);
 
-    // Curriculum progress tree
+    // Curriculum progress tree (supports 24 built-in units + AI custom books)
+    const allBooks = getAllTextbooks();
+    const visibleBooks =
+      dashFilter === 'grade3'
+        ? allBooks.filter((b) => b.gradeTag.includes('초3'))
+        : dashFilter === 'grade6'
+          ? allBooks.filter((b) => b.gradeTag.includes('초6'))
+          : allBooks;
+
     const completedSet = new Set(filtered.map((s) => s.bookId).filter(Boolean));
-    document.getElementById('dashCurriculumPct').textContent = `${completedSet.size} / ${TEXTBOOKS.length} 완료`;
+    const completedVisibleCount = visibleBooks.filter((b) => completedSet.has(b.id)).length;
+    document.getElementById('dashCurriculumPct').textContent = `${completedVisibleCount} / ${visibleBooks.length} 완료`;
     const currEl = document.getElementById('dashCurriculumList');
-    currEl.innerHTML = TEXTBOOKS.map((book) => {
+    currEl.innerHTML = visibleBooks.map((book) => {
       const done = completedSet.has(book.id);
       return `
         <div class="curr-row">
           <div class="curr-row-info">
             <strong>${esc(book.title)}</strong>
-            <span>${book.gradeTag} · ${esc(book.titleKo)}</span>
+            <span>${esc(book.gradeTag)} · ${esc(book.titleKo)}</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
             <span class="curr-status-pill ${done ? 'done' : ''}">${done ? '완료 ✓' : '학습 전'}</span>

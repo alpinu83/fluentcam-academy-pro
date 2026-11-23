@@ -51,7 +51,7 @@ function localHeuristicEvaluate(answers) {
     return {
       cefr: 'B1+ / B2',
       recommendedLevelKey: 'junior_fluent',
-      recommendedBookId: 'kids-debate-smartphones',
+      recommendedBookId: 'g6-03-debate-smartphones',
       scores: { speaking: 89, vocabulary: 87, grammar: 85, fluency: 88 },
       summary:
         '어휘 선택이 풍부하고 이유와 연결어를 사용해 완성도 높은 영어 문장을 구사하고 있어요! 원어민 속도 토론과 심화 주제 수업이 딱 맞습니다.',
@@ -64,7 +64,7 @@ function localHeuristicEvaluate(answers) {
     return {
       cefr: 'B1 (초등 고급)',
       recommendedLevelKey: 'elem6_high',
-      recommendedBookId: 'future-school-2050',
+      recommendedBookId: 'g6-01-future-school',
       scores: { speaking: 82, vocabulary: 79, grammar: 78, fluency: 81 },
       summary:
         '질문의 의도를 정확히 파악하고 자기 생각을 문장으로 또렷하게 표현하는 탄탄한 실력입니다! 짧은 영어 기사를 읽고 의견을 나누는 초6 고급 트랙을 추천해요.',
@@ -77,7 +77,7 @@ function localHeuristicEvaluate(answers) {
     return {
       cefr: 'A2+ (초등 중상급)',
       recommendedLevelKey: 'elem_upper_mid',
-      recommendedBookId: 'sunny-cafe',
+      recommendedBookId: 'g3-02-sunny-cafe',
       scores: { speaking: 76, vocabulary: 74, grammar: 73, fluency: 75 },
       summary:
         '기본 문장 구성력이 좋고 영어로 대답하려는 자신감이 돋보여요! 역할극과 스토리텔링으로 문장을 길게 늘리는 연습을 하면 실력이 빠르게 성장할 단계입니다.',
@@ -89,7 +89,7 @@ function localHeuristicEvaluate(answers) {
   return {
     cefr: 'A1+ / A2 (초등 중급)',
     recommendedLevelKey: 'elem3_mid',
-    recommendedBookId: 'magic-zoo',
+    recommendedBookId: 'g3-01-magic-zoo',
     scores: { speaking: 70, vocabulary: 69, grammar: 68, fluency: 70 },
     summary:
       '기초 영어 이해도가 좋아 원어민 선생님과 즐겁게 그림을 보며 따라 말하면 금방 말문이 트일 단계예요! 친근한 스토리텔링 교재부터 시작해 보세요.',
@@ -125,16 +125,16 @@ Placement Test Responses:
 ${qaBlock}
 
 Evaluate the student's English level accurately and warmly in Korean, and map them to ONE of these 4 course levels:
-- "elem3_mid" (Level 1 · A1+~A2) -> recommendedBookId: "magic-zoo"
-- "elem_upper_mid" (Level 2 · A2+) -> recommendedBookId: "sunny-cafe" or "mystery-show-tell"
-- "elem6_high" (Level 3 · B1) -> recommendedBookId: "future-school-2050" or "london-travel-vlog"
-- "junior_fluent" (Level 4 · B1+~B2) -> recommendedBookId: "kids-debate-smartphones"
+- "elem3_mid" (Level 1 · A1+~A2) -> recommendedBookId: "g3-01-magic-zoo"
+- "elem_upper_mid" (Level 2 · A2+) -> recommendedBookId: "g3-02-sunny-cafe" or "g3-03-show-and-tell"
+- "elem6_high" (Level 3 · B1) -> recommendedBookId: "g6-01-future-school" or "g6-02-london-vlog"
+- "junior_fluent" (Level 4 · B1+~B2) -> recommendedBookId: "g6-03-debate-smartphones"
 
 Return strictly valid JSON:
 {
   "cefr": "A2+ | B1 | B1+ etc.",
   "recommendedLevelKey": "elem3_mid | elem_upper_mid | elem6_high | junior_fluent",
-  "recommendedBookId": "magic-zoo | sunny-cafe | mystery-show-tell | future-school-2050 | london-travel-vlog | kids-debate-smartphones",
+  "recommendedBookId": "g3-01-magic-zoo | g3-02-sunny-cafe | g3-03-show-and-tell | g6-01-future-school | g6-02-london-vlog | g6-03-debate-smartphones",
   "scores": {
     "speaking": 82,
     "vocabulary": 79,

@@ -108,6 +108,25 @@ export function buildClassroomToolDeclarations() {
             required: ['mood'],
           },
         },
+        {
+          name: 'adjust_speaking_pace',
+          description:
+            'Notify the classroom UI whenever you adjust your speaking speed in response to the student saying you are too fast, asking to repeat, hesitating, or asking for a faster challenge.',
+          parameters: {
+            type: 'OBJECT',
+            properties: {
+              pace: {
+                type: 'STRING',
+                description: 'One of: slow, normal, fast',
+              },
+              reason: {
+                type: 'STRING',
+                description: 'Brief Korean note, e.g. "아이가 빠르다고 해서 천천히 또박또박 조절했어요"',
+              },
+            },
+            required: ['pace'],
+          },
+        },
       ],
     },
   ];

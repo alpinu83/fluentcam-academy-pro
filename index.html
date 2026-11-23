@@ -88,6 +88,8 @@
             <div class="kid-launch-chips">
               <span id="kidLaunchModeChip" class="meta-chip-inline">3D 립싱크 아바타</span>
               <span id="kidLaunchNoiseChip" class="meta-chip-inline">잡음 차단 ON</span>
+              <span id="kidLaunchSubChip" class="meta-chip-inline">자막 꺼짐 · 순수 리스닝</span>
+              <span id="kidLaunchPaceChip" class="meta-chip-inline">🐢 천천히</span>
             </div>
           </div>
         </div>
@@ -189,6 +191,42 @@
               </div>
             </div>
 
+            <div class="config-block" style="margin-top: 16px;">
+              <span class="config-title">수업 중 자막 설정 (부모 전용 · 아이 화면에서 변경 불가)</span>
+              <div id="subtitleSettingCards" class="correction-grid" role="radiogroup">
+                <button type="button" class="choice-card active" data-subtitle-mode="hidden">
+                  <strong>자막 끄기 (권장)</strong>
+                  <span>순수 화상 리스닝 집중 · 치팅 방지</span>
+                </button>
+                <button type="button" class="choice-card" data-subtitle-mode="blur">
+                  <strong>리스닝 블러</strong>
+                  <span>가려두고 꼭 필요할 때만 눌러 확인</span>
+                </button>
+                <button type="button" class="choice-card" data-subtitle-mode="visible">
+                  <strong>자막 켜기</strong>
+                  <span>선생님 영어를 자막으로 함께 표시</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="config-block" style="margin-top: 16px;">
+              <span class="config-title">선생님 기본 말하기 속도 (아이가 빠르다고 하면 자동 감속)</span>
+              <div id="paceSettingCards" class="correction-grid" role="radiogroup">
+                <button type="button" class="choice-card active" data-pace="slow">
+                  <strong>🐢 천천히</strong>
+                  <span>또박또박 · 순수 리스닝 초3 추천</span>
+                </button>
+                <button type="button" class="choice-card" data-pace="normal">
+                  <strong>보통 속도 (권장)</strong>
+                  <span>자연스러운 원어민 선생님 속도</span>
+                </button>
+                <button type="button" class="choice-card" data-pace="fast">
+                  <strong>🚀 원어민 속도</strong>
+                  <span>빠른 리스닝·초6 심화 훈련</span>
+                </button>
+              </div>
+            </div>
+
             <div class="avatar-mode-bar" style="margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-hairline);">
               <span class="config-title">튜터 화면 방식</span>
               <div id="avatarModePills" class="segmented-group compact">
@@ -209,16 +247,33 @@
 
         <div class="surface-card" style="margin-top: 18px;">
           <div class="card-header-row">
-            <h2 class="section-label">배정할 수업 교재 선택 (자녀별 개별 저장)</h2>
+            <h2 class="section-label">배정할 수업 교재 선택 (초3 12권 · 초6 12권 + AI 무한 생성)</h2>
             <span id="selectedBookSummary" class="status-text">A Day at the Magic Zoo</span>
           </div>
 
           <div id="bookFilterTabs" class="filter-tabs" role="tablist">
-            <button type="button" class="filter-tab active" data-filter="all">전체 교재 (6)</button>
-            <button type="button" class="filter-tab" data-filter="grade3">초3 추천</button>
-            <button type="button" class="filter-tab" data-filter="grade6">초6 추천</button>
+            <button type="button" class="filter-tab active" data-filter="all">전체 교재 (<span id="countAllBooks">24</span>)</button>
+            <button type="button" class="filter-tab" data-filter="grade3">초3 커리큘럼 (<span id="countG3Books">12</span>)</button>
+            <button type="button" class="filter-tab" data-filter="grade6">초6 커리큘럼 (<span id="countG6Books">12</span>)</button>
+            <button type="button" class="filter-tab" data-filter="ai">✨ AI 생성 교재 (<span id="countAiBooks">0</span>)</button>
             <button type="button" class="filter-tab" data-filter="custom">내 교재 붙여넣기</button>
             <button type="button" class="filter-tab" data-filter="freetalk">교재 없이 프리토킹</button>
+          </div>
+
+          <!-- Unlimited AI 4-Page Textbook Generator -->
+          <div id="aiBookGeneratorBar" class="ai-book-gen-bar">
+            <div class="ai-book-gen-head">
+              <strong>✨ AI로 새 4쪽 영어 교재 만들기</strong>
+              <span>원하는 주제를 입력하면 초3·초6 수준에 맞춘 4쪽 정규 교재(단어·본문·질문·역할극/토론)를 바로 만들어 라이브러리에 영구 저장합니다.</span>
+            </div>
+            <form id="aiBookGenForm" class="ai-book-gen-form">
+              <select id="aiBookGradeSelect" class="select-input ai-gen-grade">
+                <option value="grade3">초3 추천 (A1+~A2+)</option>
+                <option value="grade6">초6 추천 (B1~B2)</option>
+              </select>
+              <input id="aiBookTopicInput" type="text" class="text-input" placeholder="예: 해리포터 마법 학교, 프로 축구 경기, 우주 화성 탐험, 우리 강아지 자랑하기" maxlength="80" required />
+              <button id="generateAiBookBtn" class="btn btn-primary btn-sm" type="submit">✨ 4쪽 교재 생성</button>
+            </form>
           </div>
 
           <div id="textbookGrid" class="textbook-grid three-col"></div>
@@ -287,7 +342,7 @@
           <section class="surface-card">
             <div class="card-header-row">
               <h2 class="section-label">초3 · 초6 커리큘럼 진도표</h2>
-              <span id="dashCurriculumPct" class="status-text">0 / 6 완료</span>
+              <span id="dashCurriculumPct" class="status-text">0 / 24 완료</span>
             </div>
             <div id="dashCurriculumList" class="curriculum-list"></div>
           </section>
@@ -357,7 +412,7 @@
               </div>
 
               <div class="field-group">
-                <label for="reportModelSelect">힌트·레벨테스트·리포트 모델</label>
+                <label for="reportModelSelect">AI 교재 생성·레벨테스트·리포트 모델</label>
                 <select id="reportModelSelect" class="select-input mono">
                   <option value="gemini-3.5-flash-lite" selected>gemini-3.5-flash-lite (빠르고 저렴)</option>
                   <option value="gemini-3.8-flash">gemini-3.8-flash (고품질 분석)</option>
@@ -568,6 +623,7 @@
               </div>
 
               <div class="call-meta-badges">
+                <button id="callPaceBadge" class="meta-chip pace-chip" type="button" title="클릭하면 선생님께 천천히 말해달라고 바로 요청해요">보통 속도</button>
                 <span id="callNoiseGateBadge" class="meta-chip gate-chip">잡음 차단 대기</span>
                 <span id="callStarBadge" class="meta-chip star-chip" title="이번 수업에서 받은 골드 스타">★ <strong id="callStarCount">0</strong></span>
                 <span id="callStudentChip" class="meta-chip">초3 학생</span>
@@ -610,7 +666,7 @@
               <canvas id="tutorWaveCanvas" width="320" height="54"></canvas>
             </div>
 
-            <div id="subtitleOverlay" class="subtitle-overlay" data-mode="visible">
+            <div id="subtitleOverlay" class="subtitle-overlay" data-mode="hidden">
               <div class="subtitle-speaker" id="subtitleSpeaker">Tutor</div>
               <p class="subtitle-text" id="subtitleText">잠시만 기다려 주세요. 원어민 선생님이 교실에 입장하고 있습니다...</p>
               <span class="subtitle-blur-hint">마우스를 올리거나 클릭하면 자막이 선명하게 보입니다</span>
@@ -626,7 +682,7 @@
             </div>
           </div>
 
-          <!-- Bottom Call Control Dock (with Push-to-Talk!) -->
+          <!-- Bottom Call Control Dock (Pure Video Immersion — No Subtitle Toggle / No Cheating) -->
           <div class="call-dock" role="toolbar" aria-label="통화 제어">
             <button id="pttHoldBtn" class="dock-btn dock-btn-ptt hidden" type="button">
               <span>🎤 누르고 영어로 말하기 (Space)</span>
@@ -669,10 +725,6 @@
               <span class="dock-label" id="toggleAvatarViewLabel">3D 립싱크</span>
             </button>
 
-            <button id="subtitleModeBtn" class="dock-btn" type="button">
-              <span class="dock-label" id="subtitleModeLabel">자막 켜짐</span>
-            </button>
-
             <button id="toggleSidebarBtn" class="dock-btn" type="button">
               <span class="dock-label">교재·칠판</span>
             </button>
@@ -683,12 +735,11 @@
           </div>
         </div>
 
-        <!-- Classroom Right Panel -->
-        <aside id="callSidebar" class="call-sidebar classroom-panel" aria-label="수업 교재, 화이트보드 및 실시간 스크립트">
+        <!-- Classroom Right Panel (Textbook & Whiteboard Only — Pure Immersion) -->
+        <aside id="callSidebar" class="call-sidebar classroom-panel" aria-label="수업 교재 및 화이트보드">
           <div class="sidebar-top-tabs">
-            <div class="panel-tab-group" role="tablist">
-              <button id="tabBookBtn" class="panel-tab active" type="button" role="tab">수업 교재 · 판서</button>
-              <button id="tabChatBtn" class="panel-tab" type="button" role="tab">실시간 대화</button>
+            <div class="sidebar-pure-title">
+              <span>📖 수업 교재 · 화이트보드</span>
             </div>
             <div class="sidebar-top-actions">
               <button id="expandPanelBtn" class="btn btn-icon btn-sm" type="button" title="패널 넓히기/줄이기">↔</button>
@@ -727,32 +778,6 @@
               <div id="bookPageDots" class="book-page-dots"></div>
               <button id="nextBookPageBtn" class="btn btn-primary btn-sm" type="button">다음 쪽 →</button>
             </div>
-          </div>
-
-          <div id="callChatPane" class="call-chat-pane hidden">
-            <div class="chat-topic-bar"><span id="callTopicSub">자유 프리토킹</span></div>
-            <div id="transcriptList" class="transcript-list" aria-live="polite">
-              <div class="transcript-empty">수업이 시작되면 선생님과 학생의 영어가 이곳에 실시간 기록됩니다.</div>
-            </div>
-          </div>
-
-          <div id="helperTray" class="helper-tray hidden">
-            <div class="helper-tray-header">
-              <strong id="helperTrayTitle">표현 힌트</strong>
-              <button id="closeHelperTrayBtn" class="helper-close-btn" type="button" aria-label="닫기">✕</button>
-            </div>
-            <div id="helperTrayBody" class="helper-tray-body"></div>
-          </div>
-
-          <div class="sidebar-footer">
-            <div class="helper-btn-row">
-              <button id="getHintBtn" class="btn btn-secondary btn-sm" type="button">표현 힌트 3개</button>
-              <button id="translateLastBtn" class="btn btn-secondary btn-sm" type="button">방금 문장 해석</button>
-            </div>
-            <form id="chatTextForm" class="chat-input-form">
-              <input id="chatTextInput" type="text" class="text-input" placeholder="궁금한 단어·질문 입력 (Enter)" autocomplete="off" />
-              <button class="btn btn-primary btn-sm" type="submit">전송</button>
-            </form>
           </div>
         </aside>
       </div>

@@ -1,11 +1,16 @@
 import {
   TUTORS,
   STUDENT_PRESETS,
+  SPEAKING_PACES,
   LEVELS,
   CORRECTION_MODES,
   buildSystemInstruction,
 } from './tutors.js';
-import { TEXTBOOKS } from './textbooks.js';
+import {
+  getAllTextbooks,
+  saveCustomAiTextbook,
+  deleteCustomAiTextbook,
+} from './textbooks.js';
 import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js';
 import { Avatar3DController } from './avatar-3d.js';
 import { buildClassroomToolDeclarations, playRewardChime } from './classroom-tools.js';
@@ -13,8 +18,7 @@ import { ClassroomWhiteboard } from './whiteboard.js';
 import { loadFsrsDeck, ingestLessonIntoFsrsDeck } from './fsrs.js';
 import { createAcademyPages } from './academy-pages.js';
 import {
-  requestSpeakingHints,
-  translateUtterance,
+  generateAiTextbook,
   generateStudyReport,
   reportToMarkdown,
 } from './feedback.js';
@@ -26,11 +30,20 @@ const STORAGE_KEYS = {
   PARENT_PIN: 'fluentcam_parent_pin_v1',
 };
 
-const SUBTITLE_MODES = [
-  { key: 'visible', label: '자막 켜짐' },
-  { key: 'blur', label: '리스닝 블러' },
-  { key: 'hidden', label: '자막 꺼짐' },
-];
+const LEGACY_BOOK_ID_MAP = {
+  'magic-zoo': 'g3-01-magic-zoo',
+  'sunny-cafe': 'g3-02-sunny-cafe',
+  'mystery-show-tell': 'g3-03-show-and-tell',
+  'future-school-2050': 'g6-01-future-school',
+  'london-travel-vlog': 'g6-02-london-vlog',
+  'kids-debate-smartphones': 'g6-03-debate-smartphones',
+};
+
+const SUBTITLE_LABELS = {
+  hidden: '자막 꺼짐 · 순수 리스닝',
+  blur: '리스닝 블러 자막',
+  visible: '자막 켜짐',
+};
 
 const NOISE_LABELS = {
   low: '잡음 차단: 약함',
@@ -43,9 +56,11 @@ const defaultProfiles = {
     name: '초3 학생',
     levelKey: 'elem3_mid',
     correctionKey: 'gentle',
+    subtitleMode: 'hidden',
+    speakingPace: 'slow',
     tutorId: 'maya',
     bookMode: 'library',
-    selectedBookId: 'magic-zoo',
+    selectedBookId: 'g3-01-magic-zoo',
     customBookTitle: '',
     customBookContent: '',
     customTopic: '',
@@ -55,9 +70,11 @@ const defaultProfiles = {
     name: '초6 학생',
     levelKey: 'elem6_high',
     correctionKey: 'gentle',
+    subtitleMode: 'hidden',
+    speakingPace: 'normal',
     tutorId: 'oliver',
     bookMode: 'library',
-    selectedBookId: 'future-school-2050',
+    selectedBookId: 'g6-01-future-school',
     customBookTitle: '',
     customBookContent: '',
     customTopic: '',
@@ -77,9 +94,11 @@ const state = {
   selectedTutorId: 'maya',
   levelKey: 'elem3_mid',
   correctionKey: 'gentle',
+  subtitleMode: 'hidden', // 'hidden' | 'blur' | 'visible' (Parent-locked)
+  speakingPace: 'slow', // 'slow' | 'normal' | 'fast'
   bookFilter: 'all',
   bookMode: 'library',
-  selectedBookId: 'magic-zoo',
+  selectedBookId: 'g3-01-magic-zoo',
   customBookTitle: '',
   customBookContent: '',
   customTopic: '',
@@ -118,13 +137,13 @@ const state = {
   using3dInCall: false,
   callPttMode: false,
   pttPressed: false,
+  livePace: 'normal',
   videoTimerId: null,
   callTimerId: null,
   callStartMs: 0,
   waveRafId: null,
   micMuted: false,
   camEnabled: true,
-  subtitleModeIdx: 0,
 
   // Live Classroom Metrics & Tools
   studentSpeakingMs: 0,
@@ -135,9 +154,8 @@ const state = {
   // Classroom active book
   activeCallTextbook: null,
   activeCallPageIdx: 0,
-  activeSidebarTab: 'book',
 
-  // Transcript state
+  // Silent Transcript state (for post-call Study Report & FSRS)
   transcript: [],
   activeUserTurn: null,
   activeTutorTurn: null,
@@ -168,6 +186,8 @@ const el = {
   kidLaunchSub: document.getElementById('kidLaunchSub'),
   kidLaunchModeChip: document.getElementById('kidLaunchModeChip'),
   kidLaunchNoiseChip: document.getElementById('kidLaunchNoiseChip'),
+  kidLaunchSubChip: document.getElementById('kidLaunchSubChip'),
+  kidLaunchPaceChip: document.getElementById('kidLaunchPaceChip'),
   kidStartCallBtn: document.getElementById('kidStartCallBtn'),
   kidPreviewBookBtn: document.getElementById('kidPreviewBookBtn'),
   kidGoReviewBtn: document.getElementById('kidGoReviewBtn'),
@@ -220,9 +240,20 @@ const el = {
   quickLevelTestBtn: document.getElementById('quickLevelTestBtn'),
   levelPills: document.getElementById('levelPills'),
   correctionCards: document.getElementById('correctionCards'),
+  subtitleSettingCards: document.getElementById('subtitleSettingCards'),
+  paceSettingCards: document.getElementById('paceSettingCards'),
 
   selectedBookSummary: document.getElementById('selectedBookSummary'),
   bookFilterTabs: document.getElementById('bookFilterTabs'),
+  countAllBooks: document.getElementById('countAllBooks'),
+  countG3Books: document.getElementById('countG3Books'),
+  countG6Books: document.getElementById('countG6Books'),
+  countAiBooks: document.getElementById('countAiBooks'),
+  aiBookGeneratorBar: document.getElementById('aiBookGeneratorBar'),
+  aiBookGenForm: document.getElementById('aiBookGenForm'),
+  aiBookGradeSelect: document.getElementById('aiBookGradeSelect'),
+  aiBookTopicInput: document.getElementById('aiBookTopicInput'),
+  generateAiBookBtn: document.getElementById('generateAiBookBtn'),
   textbookGrid: document.getElementById('textbookGrid'),
   customBookPanel: document.getElementById('customBookPanel'),
   customBookTitleInput: document.getElementById('customBookTitleInput'),
@@ -234,7 +265,7 @@ const el = {
   selectedTutorSummary: document.getElementById('selectedTutorSummary'),
   previewSampleReportBtn: document.getElementById('previewSampleReportBtn'),
 
-  // Call View
+  // Call View (Pure Immersion — No Cheating Aids)
   callView: document.getElementById('callView'),
   tutorStageCard: document.getElementById('tutorStageCard'),
   callAvatar3dMount: document.getElementById('callAvatar3dMount'),
@@ -242,6 +273,7 @@ const el = {
   callTutorImg: document.getElementById('callTutorImg'),
   callTutorName: document.getElementById('callTutorName'),
   callTutorState: document.getElementById('callTutorState'),
+  callPaceBadge: document.getElementById('callPaceBadge'),
   callNoiseGateBadge: document.getElementById('callNoiseGateBadge'),
   callStarCount: document.getElementById('callStarCount'),
   callStudentChip: document.getElementById('callStudentChip'),
@@ -287,18 +319,13 @@ const el = {
 
   toggleAvatarViewBtn: document.getElementById('toggleAvatarViewBtn'),
   toggleAvatarViewLabel: document.getElementById('toggleAvatarViewLabel'),
-  subtitleModeBtn: document.getElementById('subtitleModeBtn'),
-  subtitleModeLabel: document.getElementById('subtitleModeLabel'),
   toggleSidebarBtn: document.getElementById('toggleSidebarBtn'),
   closeSidebarBtn: document.getElementById('closeSidebarBtn'),
   expandPanelBtn: document.getElementById('expandPanelBtn'),
   callSidebar: document.getElementById('callSidebar'),
   endCallBtn: document.getElementById('endCallBtn'),
 
-  tabBookBtn: document.getElementById('tabBookBtn'),
-  tabChatBtn: document.getElementById('tabChatBtn'),
   callBookPane: document.getElementById('callBookPane'),
-  callChatPane: document.getElementById('callChatPane'),
   callBookStepBadge: document.getElementById('callBookStepBadge'),
   callBookHeading: document.getElementById('callBookHeading'),
   callBookScroll: document.getElementById('callBookScroll'),
@@ -315,17 +342,6 @@ const el = {
   wbClearBtn: document.getElementById('wbClearBtn'),
   wbSendSketchBtn: document.getElementById('wbSendSketchBtn'),
   bookWhiteboardCanvas: document.getElementById('bookWhiteboardCanvas'),
-
-  callTopicSub: document.getElementById('callTopicSub'),
-  transcriptList: document.getElementById('transcriptList'),
-  helperTray: document.getElementById('helperTray'),
-  helperTrayTitle: document.getElementById('helperTrayTitle'),
-  helperTrayBody: document.getElementById('helperTrayBody'),
-  closeHelperTrayBtn: document.getElementById('closeHelperTrayBtn'),
-  getHintBtn: document.getElementById('getHintBtn'),
-  translateLastBtn: document.getElementById('translateLastBtn'),
-  chatTextForm: document.getElementById('chatTextForm'),
-  chatTextInput: document.getElementById('chatTextInput'),
 
   // Report View
   reportView: document.getElementById('reportView'),
@@ -425,14 +441,15 @@ function getTextbookForProfile(p) {
         {
           step: 'Custom Lesson Material',
           heading: (p.customBookTitle || '').trim() || '내 수업 지문',
-          instructionKo: '선생님과 함께 지문을 읽고 궁금한 표현을 질문해 보세요.',
+          instructionKo: '선생님과 함께 지문을 읽고 영어로 대화해 보세요.',
           readingTitle: (p.customBookTitle || '').trim() || 'Reading Passage',
           readingParagraphs: content.split(/\n{2,}/).map((x) => x.trim()).filter(Boolean),
         },
       ],
     };
   }
-  return TEXTBOOKS.find((b) => b.id === p.selectedBookId) || TEXTBOOKS[0];
+  const allBooks = getAllTextbooks();
+  return allBooks.find((b) => b.id === p.selectedBookId) || allBooks[0];
 }
 
 function getSelectedTextbookObj() {
@@ -515,6 +532,8 @@ function syncCurrentProfileFields() {
   const p = getProfile();
   p.levelKey = state.levelKey;
   p.correctionKey = state.correctionKey;
+  p.subtitleMode = state.subtitleMode;
+  p.speakingPace = state.speakingPace;
   p.tutorId = state.selectedTutorId;
   p.bookMode = state.bookMode;
   p.selectedBookId = state.selectedBookId;
@@ -525,19 +544,27 @@ function syncCurrentProfileFields() {
 
 function applyActiveProfileToState() {
   const p = getProfile();
+  const allBooks = getAllTextbooks();
   state.levelKey = LEVELS[p.levelKey] ? p.levelKey : 'elem3_mid';
   state.correctionKey = CORRECTION_MODES[p.correctionKey] ? p.correctionKey : 'gentle';
+  state.subtitleMode = ['hidden', 'blur', 'visible'].includes(p.subtitleMode) ? p.subtitleMode : 'hidden';
+  state.speakingPace = SPEAKING_PACES[p.speakingPace]
+    ? p.speakingPace
+    : state.activeStudentId === 'grade6'
+      ? 'normal'
+      : 'slow';
   state.selectedTutorId = TUTORS.some((t) => t.id === p.tutorId)
     ? p.tutorId
     : state.activeStudentId === 'grade6'
       ? 'oliver'
       : 'maya';
   state.bookMode = p.bookMode || 'library';
-  state.selectedBookId = TEXTBOOKS.some((b) => b.id === p.selectedBookId)
-    ? p.selectedBookId
+  const mappedId = LEGACY_BOOK_ID_MAP[p.selectedBookId] || p.selectedBookId;
+  state.selectedBookId = allBooks.some((b) => b.id === mappedId)
+    ? mappedId
     : state.activeStudentId === 'grade6'
-      ? 'future-school-2050'
-      : 'magic-zoo';
+      ? 'g6-01-future-school'
+      : 'g3-01-magic-zoo';
   state.customBookTitle = p.customBookTitle || '';
   state.customBookContent = p.customBookContent || '';
   state.customTopic = p.customTopic || '';
@@ -576,9 +603,18 @@ function restoreSettings() {
     if (raw) {
       const saved = JSON.parse(raw);
       if (saved.profiles) {
+        const migrateBook = (id, fallback) => LEGACY_BOOK_ID_MAP[id] || id || fallback;
         state.profiles = {
-          grade3: { ...defaultProfiles.grade3, ...(saved.profiles.grade3 || {}) },
-          grade6: { ...defaultProfiles.grade6, ...(saved.profiles.grade6 || {}) },
+          grade3: {
+            ...defaultProfiles.grade3,
+            ...(saved.profiles.grade3 || {}),
+            selectedBookId: migrateBook(saved.profiles.grade3?.selectedBookId, 'g3-01-magic-zoo'),
+          },
+          grade6: {
+            ...defaultProfiles.grade6,
+            ...(saved.profiles.grade6 || {}),
+            selectedBookId: migrateBook(saved.profiles.grade6?.selectedBookId, 'g6-01-future-school'),
+          },
         };
       }
       if (saved.activeStudentId && state.profiles[saved.activeStudentId]) {
@@ -643,10 +679,11 @@ const academyPages = createAcademyPages({
   showToast,
   onApplyRecommendation: ({ levelKey, bookId }) => {
     if (LEVELS[levelKey]) state.levelKey = levelKey;
-    if (TEXTBOOKS.some((b) => b.id === bookId)) {
+    const mappedId = LEGACY_BOOK_ID_MAP[bookId] || bookId;
+    if (getAllTextbooks().some((b) => b.id === mappedId)) {
       state.bookMode = 'library';
       state.bookFilter = 'all';
-      state.selectedBookId = bookId;
+      state.selectedBookId = mappedId;
     }
     saveSettings();
     switchView('kidhome');
@@ -726,6 +763,8 @@ function renderKidHome() {
   el.kidLaunchModeChip.textContent = state.avatarMode === '3d' ? '3D 실시간 립싱크 아바타' : '실사 스튜디오 화면';
   el.kidLaunchNoiseChip.textContent =
     state.speechMode === 'ptt' ? '눌러서 말하기 모드' : NOISE_LABELS[state.noiseSensitivity] || '잡음 차단 ON';
+  el.kidLaunchSubChip.textContent = SUBTITLE_LABELS[state.subtitleMode] || '자막 꺼짐 · 순수 리스닝';
+  el.kidLaunchPaceChip.textContent = SPEAKING_PACES[state.speakingPace]?.shortLabel || '보통 속도';
   el.kidPreviewBookBtn.classList.toggle('hidden', !curBook || curBook.id === 'custom-book');
 }
 
@@ -832,15 +871,6 @@ function renderBookPageMarkup(page, { interactive = false } = {}) {
     `);
   }
 
-  if (Array.isArray(page.starters) && page.starters.length) {
-    sections.push(`
-      <div class="book-starters-box">
-        <div class="book-starters-title">영어로 말문 트기 힌트 (Sentence Starters)</div>
-        <div class="book-starter-chips">${page.starters.map((s) => `<div class="starter-chip">"${escapeHtml(s)}"</div>`).join('')}</div>
-      </div>
-    `);
-  }
-
   return sections.join('');
 }
 
@@ -876,14 +906,27 @@ function renderStudentPresets() {
 function renderTextbooks() {
   const isCustomTab = state.bookFilter === 'custom';
   const isFreeTalkTab = state.bookFilter === 'freetalk';
+  const allBooks = getAllTextbooks();
+  const g3Count = allBooks.filter((b) => b.gradeTag.includes('초3')).length;
+  const g6Count = allBooks.filter((b) => b.gradeTag.includes('초6')).length;
+  const aiCount = allBooks.filter((b) => b.isAiGenerated).length;
+
+  el.countAllBooks.textContent = String(allBooks.length);
+  el.countG3Books.textContent = String(g3Count);
+  el.countG6Books.textContent = String(g6Count);
+  el.countAiBooks.textContent = String(aiCount);
 
   el.bookFilterTabs.querySelectorAll('.filter-tab').forEach((tab) => {
     tab.classList.toggle('active', tab.dataset.filter === state.bookFilter);
   });
 
+  el.aiBookGeneratorBar.classList.toggle('hidden', isCustomTab || isFreeTalkTab);
   el.textbookGrid.classList.toggle('hidden', isCustomTab || isFreeTalkTab);
   el.customBookPanel.classList.toggle('hidden', !isCustomTab);
   el.freeTalkPanel.classList.toggle('hidden', !isFreeTalkTab);
+
+  // Sync AI generator grade dropdown with currently edited student
+  el.aiBookGradeSelect.value = state.activeStudentId === 'grade6' ? 'grade6' : 'grade3';
 
   const completedBooks = new Set(
     loadHistory()
@@ -892,59 +935,121 @@ function renderTextbooks() {
   );
 
   if (!isCustomTab && !isFreeTalkTab) {
-    const filtered = TEXTBOOKS.filter((book) => {
+    const filtered = allBooks.filter((book) => {
       if (state.bookFilter === 'grade3') return book.gradeTag.includes('초3');
       if (state.bookFilter === 'grade6') return book.gradeTag.includes('초6');
+      if (state.bookFilter === 'ai') return Boolean(book.isAiGenerated);
       return true;
     });
 
-    el.textbookGrid.innerHTML = filtered
-      .map((book) => {
-        const selected = state.bookMode === 'library' && state.selectedBookId === book.id;
-        const isG6 = book.gradeTag.includes('초6');
-        const done = completedBooks.has(book.id);
-        return `
-          <div class="book-card ${selected ? 'selected' : ''}" data-book-id="${book.id}" role="button" tabindex="0">
-            <div class="book-cover-wrap">
-              <img src="${book.cover}" alt="${escapeHtml(book.title)}" />
-              <span class="book-grade-pill ${isG6 ? 'g6' : ''}">${book.gradeTag}</span>
-              ${done ? '<span class="book-done-pill">완료 ✓</span>' : ''}
-              <span class="book-selected-mark" aria-hidden="true">✓</span>
-            </div>
-            <div class="book-card-body">
-              <span class="book-category">${book.category}</span>
-              <h3>${escapeHtml(book.title)}</h3>
-              <p class="book-subtitle">${escapeHtml(book.titleKo)}</p>
-              <p class="book-desc">${escapeHtml(book.description)}</p>
-              <div class="book-card-footer">
-                <span class="book-pages-count">${book.pages.length}쪽 · ${book.levelRange}</span>
-                <button type="button" class="btn btn-secondary btn-sm" data-preview-book="${book.id}">미리보기</button>
+    if (filtered.length === 0) {
+      el.textbookGrid.innerHTML =
+        '<div class="history-empty" style="grid-column: 1 / -1;">아직 AI로 생성한 맞춤 교재가 없습니다.<br/>위 입력창에 아이가 좋아하는 주제를 입력해 새 4쪽 교재를 만들어 보세요!</div>';
+    } else {
+      el.textbookGrid.innerHTML = filtered
+        .map((book) => {
+          const selected = state.bookMode === 'library' && state.selectedBookId === book.id;
+          const isG6 = book.gradeTag.includes('초6');
+          const done = completedBooks.has(book.id);
+          return `
+            <div class="book-card ${selected ? 'selected' : ''}" data-book-id="${book.id}" role="button" tabindex="0">
+              <div class="book-cover-wrap">
+                <img src="${book.cover}" alt="${escapeHtml(book.title)}" />
+                <span class="book-grade-pill ${isG6 ? 'g6' : ''}">${escapeHtml(book.gradeTag)}</span>
+                ${done ? '<span class="book-done-pill">완료 ✓</span>' : ''}
+                <span class="book-selected-mark" aria-hidden="true">✓</span>
+              </div>
+              <div class="book-card-body">
+                <span class="book-category">${escapeHtml(book.category)}</span>
+                <h3>${escapeHtml(book.title)}</h3>
+                <p class="book-subtitle">${escapeHtml(book.titleKo)}</p>
+                <p class="book-desc">${escapeHtml(book.description)}</p>
+                <div class="book-card-footer">
+                  <span class="book-pages-count">${book.pages.length}쪽 · ${escapeHtml(book.levelRange)}</span>
+                  <div class="book-card-footer-btns">
+                    ${book.isAiGenerated ? `<button type="button" class="book-del-ai-btn" data-del-ai-book="${book.id}">삭제</button>` : ''}
+                    <button type="button" class="btn btn-secondary btn-sm" data-preview-book="${book.id}">미리보기</button>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
-        `;
-      })
-      .join('');
+          `;
+        })
+        .join('');
 
-    el.textbookGrid.querySelectorAll('.book-card').forEach((card) => {
-      card.addEventListener('click', (e) => {
-        if (e.target.closest('[data-preview-book]')) return;
-        state.bookMode = 'library';
-        state.selectedBookId = card.dataset.bookId;
-        saveSettings();
-        renderTextbooks();
+      el.textbookGrid.querySelectorAll('.book-card').forEach((card) => {
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('[data-preview-book]') || e.target.closest('[data-del-ai-book]')) return;
+          state.bookMode = 'library';
+          state.selectedBookId = card.dataset.bookId;
+          saveSettings();
+          renderTextbooks();
+        });
       });
-    });
 
-    el.textbookGrid.querySelectorAll('[data-preview-book]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openBookPreviewModal(btn.dataset.previewBook, { readOnly: false });
+      el.textbookGrid.querySelectorAll('[data-preview-book]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openBookPreviewModal(btn.dataset.previewBook, { readOnly: false });
+        });
       });
-    });
+
+      el.textbookGrid.querySelectorAll('[data-del-ai-book]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const delId = btn.dataset.delAiBook;
+          deleteCustomAiTextbook(delId);
+          if (state.selectedBookId === delId) {
+            state.selectedBookId = state.activeStudentId === 'grade6' ? 'g6-01-future-school' : 'g3-01-magic-zoo';
+            saveSettings();
+          }
+          renderTextbooks();
+          showToast('AI 생성 교재를 삭제했습니다.');
+        });
+      });
+    }
   }
 
   el.selectedBookSummary.textContent = getLessonTitleLabel();
+}
+
+async function handleGenerateAiBook(e) {
+  e.preventDefault();
+  const apiKey = el.apiKeyInput.value.trim();
+  const topic = el.aiBookTopicInput.value.trim();
+  const grade = el.aiBookGradeSelect.value;
+
+  if (!apiKey) {
+    showToast('먼저 [3. API 키 · 잡음 차단 · 비밀번호] 탭에서 Gemini API 키를 입력해 주세요.', 3800);
+    setParentTab('system');
+    return;
+  }
+  if (!topic) return;
+
+  el.generateAiBookBtn.disabled = true;
+  el.generateAiBookBtn.textContent = '✨ 4쪽 교재 생성 중...';
+
+  try {
+    const newBook = await generateAiTextbook({
+      apiKey,
+      model: state.reportModel,
+      topic,
+      grade,
+    });
+    saveCustomAiTextbook(newBook);
+    state.bookMode = 'library';
+    state.selectedBookId = newBook.id;
+    state.bookFilter = 'ai';
+    el.aiBookTopicInput.value = '';
+    saveSettings();
+    renderTextbooks();
+    showToast(`새 4쪽 교재 "${newBook.title}"가 생성되어 바로 배정되었습니다!`, 3600);
+  } catch (err) {
+    showToast(err.message || '교재 생성 중 오류가 발생했습니다.', 4200);
+  } finally {
+    el.generateAiBookBtn.disabled = false;
+    el.generateAiBookBtn.textContent = '✨ 4쪽 교재 생성';
+  }
 }
 
 function renderTutors() {
@@ -986,6 +1091,12 @@ function renderParentEducationTab() {
   el.correctionCards.querySelectorAll('.choice-card').forEach((card) => {
     card.classList.toggle('active', card.dataset.correction === state.correctionKey);
   });
+  el.subtitleSettingCards.querySelectorAll('.choice-card').forEach((card) => {
+    card.classList.toggle('active', card.dataset.subtitleMode === state.subtitleMode);
+  });
+  el.paceSettingCards.querySelectorAll('.choice-card').forEach((card) => {
+    card.classList.toggle('active', card.dataset.pace === state.speakingPace);
+  });
   el.avatarModePills.querySelectorAll('.seg-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.avatarMode === state.avatarMode);
   });
@@ -1018,7 +1129,7 @@ function syncParentSystemControls() {
 
 // ==================== TEXTBOOK PREVIEW MODAL ====================
 function renderBookPreviewPage() {
-  const book = TEXTBOOKS.find((b) => b.id === state.previewBookId);
+  const book = getAllTextbooks().find((b) => b.id === state.previewBookId);
   if (!book) return;
   const page = book.pages[state.previewPageIdx] || book.pages[0];
 
@@ -1042,30 +1153,29 @@ function openBookPreviewModal(bookId, { readOnly = false } = {}) {
 }
 
 // ==================== IN-CALL TEXTBOOK & CLASSROOM TOOLS ====================
-function setSidebarTab(tabName) {
-  state.activeSidebarTab = tabName;
-  const isBook = tabName === 'book';
-  el.tabBookBtn.classList.toggle('active', isBook);
-  el.tabChatBtn.classList.toggle('active', !isBook);
-  el.callBookPane.classList.toggle('hidden', !isBook);
-  el.callChatPane.classList.toggle('hidden', isBook);
-}
-
 function renderActiveCallBookPage({ notifyTutor = false } = {}) {
   const book = state.activeCallTextbook;
+  whiteboard.clear();
+
   if (!book || !Array.isArray(book.pages) || book.pages.length === 0) {
-    el.tabBookBtn.classList.add('hidden');
-    setSidebarTab('chat');
+    const topicLabel = getLessonTitleLabel();
+    el.callBookStepBadge.textContent = 'Free Talk · 화이트보드';
+    el.callBookHeading.textContent = topicLabel;
+    el.callBookScroll.innerHTML = `
+      <div class="freetalk-board-card">
+        <h3>🎤 순수 화상 프리토킹 교실</h3>
+        <p>교재 없이 원어민 선생님과 얼굴을 보며 자유롭게 영어로 대화해요!<br/>위 <b>✏️ 펜 판서</b> 버튼을 누르면 그림을 그려 선생님께 바로 보여줄 수 있습니다.</p>
+      </div>
+    `;
+    el.callBookNav.classList.add('hidden');
     return;
   }
 
-  el.tabBookBtn.classList.remove('hidden');
   const total = book.pages.length;
   const idx = Math.max(0, Math.min(total - 1, state.activeCallPageIdx));
   state.activeCallPageIdx = idx;
   const page = book.pages[idx];
 
-  whiteboard.clear();
   el.callBookStepBadge.textContent = `${book.title} · ${page.step}`;
   el.callBookHeading.textContent = page.heading;
   el.callBookScroll.innerHTML = renderBookPageMarkup(page, { interactive: true });
@@ -1177,6 +1287,13 @@ function showPopQuiz({ question, options = [], correctIndex = 0, explanation = '
   el.popQuizCard.classList.remove('hidden');
 }
 
+function updateCallPaceUI(paceKey) {
+  const valid = SPEAKING_PACES[paceKey] ? paceKey : 'normal';
+  state.livePace = valid;
+  el.callPaceBadge.textContent = SPEAKING_PACES[valid].shortLabel;
+  el.callPaceBadge.classList.toggle('is-slow', valid === 'slow');
+}
+
 async function handleGeminiToolCall(fnCall) {
   const name = fnCall.name;
   const args = fnCall.args || {};
@@ -1186,7 +1303,6 @@ async function handleGeminiToolCall(fnCall) {
     if (!book || !book.pages?.length) return { ok: false, message: 'No textbook active.' };
     const targetIdx = Math.max(0, Math.min(book.pages.length - 1, Number(args.pageNumber || 1) - 1));
     state.activeCallPageIdx = targetIdx;
-    setSidebarTab('book');
     renderActiveCallBookPage({ notifyTutor: false });
     showToast(`선생님이 교재를 ${targetIdx + 1}쪽으로 넘겼어요!`);
     return { ok: true, currentPage: targetIdx + 1, heading: book.pages[targetIdx].heading };
@@ -1211,6 +1327,16 @@ async function handleGeminiToolCall(fnCall) {
     if (args.mood) state.avatar3d?.setMood(args.mood);
     if (args.gesture && args.gesture !== 'none') state.avatar3d?.playGesture(args.gesture, 2.5);
     return { ok: true };
+  }
+
+  if (name === 'adjust_speaking_pace') {
+    const nextPace = SPEAKING_PACES[args.pace] ? args.pace : 'slow';
+    updateCallPaceUI(nextPace);
+    showToast(
+      args.reason || `선생님이 말하는 속도를 [${SPEAKING_PACES[nextPace].label}]로 자동 조절했어요!`,
+      3400
+    );
+    return { ok: true, activePace: nextPace };
   }
 
   return { ok: true };
@@ -1293,19 +1419,15 @@ async function toggleLobbyPreview() {
   }
 }
 
-// ==================== TRANSCRIPT UI ====================
+// ==================== SILENT TRANSCRIPT RECORDER (FOR POST-CALL REPORT) ====================
 function resetTranscriptUI() {
   state.transcript = [];
   state.activeUserTurn = null;
   state.activeTutorTurn = null;
-  el.transcriptList.innerHTML =
-    '<div class="transcript-empty">수업이 시작되면 선생님과 학생의 영어가 이곳에 실시간 기록됩니다.</div>';
+  el.subtitleText.textContent = '잠시만 기다려 주세요. 원어민 선생님이 교실에 입장하고 있습니다...';
 }
 
 function appendOrUpdateTurn(role, chunkText) {
-  const emptyEl = el.transcriptList.querySelector('.transcript-empty');
-  if (emptyEl) emptyEl.remove();
-
   const tutor = getSelectedTutor();
   const studentName = getStudentDisplayName();
   const isUser = role === 'user';
@@ -1315,30 +1437,20 @@ function appendOrUpdateTurn(role, chunkText) {
 
   let turn = isUser ? state.activeUserTurn : state.activeTutorTurn;
   if (!turn) {
-    const row = document.createElement('div');
-    row.className = `bubble-row ${role}`;
-    const meta = document.createElement('span');
-    meta.className = 'bubble-meta';
-    meta.textContent = isUser ? studentName : tutor.name;
-    const body = document.createElement('div');
-    body.className = 'bubble-body';
-    row.appendChild(meta);
-    row.appendChild(body);
-    el.transcriptList.appendChild(row);
-
-    turn = { role, text: '', time: Date.now(), bodyEl: body };
+    turn = { role, text: '', time: Date.now() };
     state.transcript.push(turn);
     if (isUser) state.activeUserTurn = turn;
     else state.activeTutorTurn = turn;
   }
 
   turn.text = mergeTranscriptChunk(turn.text, chunkText);
-  turn.bodyEl.textContent = turn.text;
-  el.transcriptList.scrollTop = el.transcriptList.scrollHeight;
 
-  el.subtitleSpeaker.textContent = isUser ? studentName : `${tutor.name} (${tutor.accentLabel})`;
-  el.subtitleText.textContent = turn.text;
-  el.subtitleOverlay.classList.remove('revealed');
+  // Only show live subtitle overlay when Parent Admin enabled 'visible' or 'blur'
+  if (state.subtitleMode !== 'hidden') {
+    el.subtitleSpeaker.textContent = isUser ? studentName : `${tutor.name} (${tutor.accentLabel})`;
+    el.subtitleText.textContent = turn.text;
+    el.subtitleOverlay.classList.remove('revealed');
+  }
 }
 
 function finalizeActiveTurns() {
@@ -1364,6 +1476,7 @@ function startWaveformLoop() {
   const canvas = el.tutorWaveCanvas;
   const ctx = canvas.getContext('2d');
   const barCount = 24;
+  let smoothEnergy = 0;
 
   const draw = () => {
     if (!state.inCall) return;
@@ -1378,8 +1491,10 @@ function startWaveformLoop() {
     const gap = 5;
     const barW = (w - gap * (barCount - 1)) / barCount;
 
+    let energySum = 0;
     for (let i = 0; i < barCount; i++) {
       const val = speaking ? Math.max(0.1, levels[i]) : 0.08;
+      energySum += levels[i] || 0;
       const barH = Math.max(4, val * (h - 8));
       const x = i * (barW + gap);
       const y = (h - barH) / 2;
@@ -1388,6 +1503,16 @@ function startWaveformLoop() {
       ctx.roundRect(x, y, barW, barH, 4);
       ctx.fill();
     }
+
+    // Subtle audio-reactive studio presence in Portrait mode
+    if (!state.using3dInCall) {
+      const avg = speaking ? energySum / barCount : 0;
+      smoothEnergy = smoothEnergy * 0.78 + avg * 0.22;
+      const scale = 1.01 + smoothEnergy * 0.028;
+      const yShift = -smoothEnergy * 3.2;
+      el.callTutorImg.style.transform = `scale(${scale.toFixed(4)}) translateY(${yShift.toFixed(2)}px)`;
+    }
+
     state.waveRafId = requestAnimationFrame(draw);
   };
   draw();
@@ -1436,9 +1561,8 @@ function updateAvatarLayerUI() {
 }
 
 function applySubtitleMode() {
-  const mode = SUBTITLE_MODES[state.subtitleModeIdx];
-  el.subtitleOverlay.dataset.mode = mode.key;
-  el.subtitleModeLabel.textContent = mode.label;
+  // Strictly controlled by Parent Admin setting (hidden | blur | visible)
+  el.subtitleOverlay.dataset.mode = state.subtitleMode || 'hidden';
 }
 
 async function startCall() {
@@ -1456,7 +1580,6 @@ async function startCall() {
   const studentName = getStudentDisplayName();
   const textbook = getSelectedTextbookObj();
   const liveModel = getActiveLiveModel();
-  const topicLabel = getLessonTitleLabel();
 
   el.kidStartCallBtn.disabled = true;
   el.kidStartCallBtn.querySelector('span').textContent = '선생님 교실 연결 중...';
@@ -1498,18 +1621,17 @@ async function startCall() {
     el.callTutorImg.src = tutor.avatar;
     el.callTutorImg.alt = `${tutor.name} 선생님`;
     el.callTutorImg.classList.remove('hidden');
+    el.callTutorImg.style.transform = '';
     el.callAvatar3dMount.classList.add('hidden');
     el.callTutorName.textContent = `${tutor.name} · ${tutor.accentLabel}`;
     el.callTutorState.textContent = '교실 준비 중...';
     el.callStarCount.textContent = '0';
     el.callStudentChip.textContent = `${studentName} · ${LEVELS[state.levelKey].shortLabel}`;
     el.pipStudentLabel.textContent = studentName;
-    el.callTopicSub.textContent = `${topicLabel} · ${LEVELS[state.levelKey].label}`;
     el.tutorStageCard.classList.remove('connected', 'speaking');
     el.chalkboardBanner.classList.add('hidden');
     el.starCelebrateBanner.classList.add('hidden');
     el.popQuizCard.classList.add('hidden');
-    el.helperTray.classList.add('hidden');
     el.callSidebar.classList.remove('collapsed');
     resetTranscriptUI();
     whiteboard.setEnabled(false);
@@ -1517,19 +1639,14 @@ async function startCall() {
     el.wbToggleBtn.classList.remove('active');
     el.wbColorsGroup.classList.add('hidden');
 
-    if (textbook) {
-      setSidebarTab('book');
-      renderActiveCallBookPage({ notifyTutor: false });
-    } else {
-      el.tabBookBtn.classList.add('hidden');
-      setSidebarTab('chat');
-    }
+    renderActiveCallBookPage({ notifyTutor: false });
 
     el.callUserVideo.srcObject = state.camEnabled ? stream : null;
     updateMicUI();
     updatePttUI();
     updateCamUI();
     applySubtitleMode();
+    updateCallPaceUI(state.speakingPace);
 
     // 3D Lip-Sync Avatar
     let externalAudioTarget = null;
@@ -1569,6 +1686,7 @@ async function startCall() {
       studentName,
       levelKey: state.levelKey,
       correctionKey: state.correctionKey,
+      speakingPace: state.speakingPace,
       textbook,
       activePageIdx: 0,
       customTopic: state.customTopic,
@@ -1912,89 +2030,20 @@ function handleManualSnapshot() {
   showToast('현재 웹캠 화면을 선생님께 보냈습니다!');
 }
 
-async function handleRequestHints() {
-  const apiKey = el.apiKeyInput.value.trim();
-  if (!apiKey) return;
-
-  el.helperTrayTitle.textContent = '표현 힌트 생성 중...';
-  el.helperTrayBody.innerHTML = '<span style="color: var(--text-muted)">지금 대답하기 좋은 영어 문장을 찾고 있어요...</span>';
-  el.helperTray.classList.remove('hidden');
-  el.getHintBtn.disabled = true;
-
-  try {
-    const data = await requestSpeakingHints({
-      apiKey,
-      model: state.reportModel,
-      transcript: state.transcript.map((t) => ({ role: t.role, text: t.text })),
-      tutorName: getSelectedTutor().name,
-      levelLabel: LEVELS[state.levelKey].label,
-      textbookTitle: state.activeCallTextbook?.title || '',
-    });
-    el.helperTrayTitle.textContent = '지금 말해보면 좋은 표현 3가지';
-    const hints = Array.isArray(data.hints) ? data.hints : [];
-    el.helperTrayBody.innerHTML =
-      hints
-        .map(
-          (h) => `
-        <div class="hint-item">
-          <strong>${escapeHtml(h.english)}</strong>
-          <span>${escapeHtml(h.korean)}${h.nuance ? ` · ${escapeHtml(h.nuance)}` : ''}</span>
-        </div>`
-        )
-        .join('') || '<span>힌트를 만들지 못했습니다.</span>';
-  } catch (err) {
-    el.helperTrayTitle.textContent = '힌트 오류';
-    el.helperTrayBody.textContent = err.message;
-  } finally {
-    el.getHintBtn.disabled = false;
-  }
-}
-
-async function handleTranslateLast() {
-  const apiKey = el.apiKeyInput.value.trim();
-  const lastTutor = [...state.transcript].reverse().find((t) => t.role === 'tutor' && t.text.trim());
-  if (!lastTutor) {
-    showToast('아직 해석할 선생님 문장이 없습니다.');
-    return;
-  }
-
-  el.helperTrayTitle.textContent = '해석 중...';
-  el.helperTrayBody.innerHTML = '<span style="color: var(--text-muted)">방금 선생님이 한 말을 해석하고 있어요...</span>';
-  el.helperTray.classList.remove('hidden');
-  el.translateLastBtn.disabled = true;
-
-  try {
-    const res = await translateUtterance({
-      apiKey,
-      model: state.reportModel,
-      text: lastTutor.text,
-    });
-    el.helperTrayTitle.textContent = '방금 선생님 문장 해석';
-    const notesHtml =
-      Array.isArray(res.notes) && res.notes.length
-        ? res.notes
-            .map(
-              (n) => `
-            <div class="hint-item">
-              <strong>${escapeHtml(n.expression)}</strong>
-              <span>${escapeHtml(n.meaning)}</span>
-            </div>`
-            )
-            .join('')
-        : '';
-
-    el.helperTrayBody.innerHTML = `
-      <div class="hint-item">
-        <strong>${escapeHtml(res.korean)}</strong>
-        <span>"${escapeHtml(lastTutor.text)}"</span>
-      </div>
-      ${notesHtml}
-    `;
-  } catch (err) {
-    el.helperTrayTitle.textContent = '해석 오류';
-    el.helperTrayBody.textContent = err.message;
-  } finally {
-    el.translateLastBtn.disabled = false;
+function handleQuickPaceAdjust() {
+  if (!state.inCall) return;
+  const nextPace = state.livePace === 'slow' ? 'normal' : 'slow';
+  updateCallPaceUI(nextPace);
+  if (nextPace === 'slow') {
+    state.liveClient?.sendTextTurn(
+      '[Speaking Pace Adjustment] Please slow down noticeably from now on—speak very clearly with short pauses between phrases.'
+    );
+    showToast('선생님께 천천히 또박또박 말해달라고 전달했어요 🐢');
+  } else {
+    state.liveClient?.sendTextTurn(
+      '[Speaking Pace Adjustment] Great! You can speak at a natural comfortable ESL teacher pace now.'
+    );
+    showToast('선생님 속도를 보통 속도로 전환했어요');
   }
 }
 
@@ -2323,6 +2372,26 @@ function bindEvents() {
     });
   });
 
+  el.subtitleSettingCards.querySelectorAll('.choice-card').forEach((card) => {
+    card.addEventListener('click', () => {
+      state.subtitleMode = card.dataset.subtitleMode;
+      saveSettings();
+      renderParentEducationTab();
+      showToast(`${getStudentDisplayName()} 자막 설정: [${SUBTITLE_LABELS[state.subtitleMode]}]`);
+    });
+  });
+
+  el.paceSettingCards.querySelectorAll('.choice-card').forEach((card) => {
+    card.addEventListener('click', () => {
+      state.speakingPace = card.dataset.pace;
+      saveSettings();
+      renderParentEducationTab();
+      showToast(`${getStudentDisplayName()} 기본 속도: [${SPEAKING_PACES[state.speakingPace].label}]`);
+    });
+  });
+
+  el.aiBookGenForm.addEventListener('submit', handleGenerateAiBook);
+
   el.avatarModePills.querySelectorAll('.seg-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.avatarMode = btn.dataset.avatarMode;
@@ -2446,7 +2515,7 @@ function bindEvents() {
     }
   });
   el.previewNextPageBtn.addEventListener('click', () => {
-    const book = TEXTBOOKS.find((b) => b.id === state.previewBookId);
+    const book = getAllTextbooks().find((b) => b.id === state.previewBookId);
     if (book && state.previewPageIdx < book.pages.length - 1) {
       state.previewPageIdx += 1;
       renderBookPreviewPage();
@@ -2465,6 +2534,7 @@ function bindEvents() {
   });
 
   // In-Call Controls + Push-to-Talk (Mouse / Touch / Spacebar)
+  el.callPaceBadge.addEventListener('click', handleQuickPaceAdjust);
   el.micToggleBtn.addEventListener('click', handleToggleMic);
   el.togglePttModeBtn.addEventListener('click', handleTogglePttMode);
   el.camToggleBtn.addEventListener('click', handleToggleCam);
@@ -2499,10 +2569,6 @@ function bindEvents() {
   el.closeChalkboardBtn.addEventListener('click', () => el.chalkboardBanner.classList.add('hidden'));
   el.closePopQuizBtn.addEventListener('click', () => el.popQuizCard.classList.add('hidden'));
 
-  el.subtitleModeBtn.addEventListener('click', () => {
-    state.subtitleModeIdx = (state.subtitleModeIdx + 1) % SUBTITLE_MODES.length;
-    applySubtitleMode();
-  });
   el.subtitleOverlay.addEventListener('click', () => {
     if (el.subtitleOverlay.dataset.mode === 'blur') el.subtitleOverlay.classList.toggle('revealed');
   });
@@ -2513,9 +2579,6 @@ function bindEvents() {
     el.callSidebar.classList.toggle('expanded');
     setTimeout(() => whiteboard.resizeToParent(), 220);
   });
-
-  el.tabBookBtn.addEventListener('click', () => setSidebarTab('book'));
-  el.tabChatBtn.addEventListener('click', () => setSidebarTab('chat'));
 
   el.prevBookPageBtn.addEventListener('click', () => {
     if (state.activeCallPageIdx > 0) {
@@ -2575,21 +2638,6 @@ function bindEvents() {
       );
       showToast('화이트보드 그림을 선생님께 보냈어요!');
     }
-  });
-
-  // Helper & text chat
-  el.getHintBtn.addEventListener('click', handleRequestHints);
-  el.translateLastBtn.addEventListener('click', handleTranslateLast);
-  el.closeHelperTrayBtn.addEventListener('click', () => el.helperTray.classList.add('hidden'));
-
-  el.chatTextForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const text = el.chatTextInput.value.trim();
-    if (!text || !state.inCall) return;
-    el.chatTextInput.value = '';
-    appendOrUpdateTurn('user', text);
-    finalizeActiveTurns();
-    state.liveClient?.sendTextTurn(text);
   });
 
   // Report controls

@@ -349,6 +349,20 @@ html, body {
 
 .custom-book-panel { display: flex; flex-direction: column; gap: 12px; padding: 14px; border-radius: 12px; background: var(--bg-elevated); border: 1px solid var(--border-hairline); }
 
+/* AI Unlimited Textbook Generator Bar */
+.ai-book-gen-bar {
+  margin-bottom: 14px; padding: 13px 15px; border-radius: 13px;
+  background: linear-gradient(135deg, rgba(217,119,69,0.12), rgba(94,164,126,0.08));
+  border: 1px solid rgba(217,119,69,0.3); display: flex; flex-direction: column; gap: 10px;
+}
+.ai-book-gen-head { display: flex; flex-direction: column; gap: 2px; }
+.ai-book-gen-head strong { font-size: 0.87rem; color: var(--text-primary); }
+.ai-book-gen-head span { font-size: 0.75rem; color: var(--text-secondary); }
+.ai-book-gen-form { display: grid; grid-template-columns: 185px 1fr auto; gap: 8px; align-items: center; }
+.book-card-footer-btns { display: inline-flex; align-items: center; gap: 6px; }
+.book-del-ai-btn { padding: 5px 8px; border-radius: 7px; border: 1px solid rgba(212,82,78,0.35); background: var(--danger-soft); color: #f8b4b2; font-size: 0.72rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+.book-del-ai-btn:hover { background: rgba(212,82,78,0.32); }
+
 /* Tutor Grid */
 .tutor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
 .tutor-card { display: flex; flex-direction: column; text-align: left; background: var(--bg-elevated); border: 1px solid var(--border-hairline); border-radius: var(--radius-md); overflow: hidden; padding: 0; cursor: pointer; color: inherit; font-family: inherit; }
@@ -423,7 +437,7 @@ html, body {
 .dash-grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 18px; }
 .dash-chart-wrap { min-height: 215px; display: flex; flex-direction: column; justify-content: center; }
 .dash-chart-empty { text-align: center; padding: 44px 16px; color: var(--text-muted); font-size: 0.84rem; }
-.curriculum-list { display: flex; flex-direction: column; gap: 9px; }
+.curriculum-list { display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow-y: auto; padding-right: 4px; }
 .curr-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-radius: 11px; background: var(--bg-elevated); border: 1px solid var(--border-hairline); }
 .curr-row-info strong { display: block; font-size: 0.85rem; }
 .curr-row-info span { font-size: 0.73rem; color: var(--text-secondary); }
@@ -661,6 +675,14 @@ html, body {
 
 .toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 80; padding: 10px 18px; border-radius: 999px; background: #2b2621; border: 1px solid var(--border-strong); color: var(--text-primary); font-size: 0.83rem; font-weight: 500; box-shadow: 0 12px 32px rgba(0,0,0,0.45); }
 
+.pace-chip { cursor: pointer; font-family: inherit; transition: border-color 0.2s, background 0.2s; }
+.pace-chip:hover { border-color: var(--accent); background: rgba(217,119,69,0.28); }
+.pace-chip.is-slow { border-color: rgba(155,224,184,0.45); color: #b8f2cf; }
+.sidebar-pure-title { font-size: 0.84rem; font-weight: 700; color: var(--text-primary); padding: 4px 6px; }
+.freetalk-board-card { padding: 18px 16px; border-radius: 13px; background: var(--paper-card); border: 1px dashed var(--paper-border); color: var(--paper-ink); text-align: center; display: flex; flex-direction: column; gap: 8px; }
+.freetalk-board-card h3 { margin: 0; font-size: 1rem; color: #b45324; }
+.freetalk-board-card p { margin: 0; font-size: 0.84rem; color: var(--paper-muted); line-height: 1.55; }
+
 /* ==================== RESPONSIVE ==================== */
 @media (max-width: 1080px) {
   .parent-edu-grid, .report-summary-grid, .review-layout, .dash-grid, .lt-result-grid { grid-template-columns: 1fr; }
@@ -675,6 +697,6 @@ html, body {
   .top-header { padding: 10px 14px; flex-wrap: wrap; }
   .brand-sub { display: none; }
   .kid-home-view, .subpage-view { padding: 18px 14px 36px; }
-  .kid-profile-grid, .tutor-grid, .textbook-grid, .textbook-grid.three-col, .level-grid, .correction-grid, .vocab-grid, .book-debate-grid, .kpi-strip { grid-template-columns: 1fr; }
+  .kid-profile-grid, .tutor-grid, .textbook-grid, .textbook-grid.three-col, .level-grid, .correction-grid, .vocab-grid, .book-debate-grid, .kpi-strip, .ai-book-gen-form { grid-template-columns: 1fr; }
   .fsrs-rating-grid { grid-template-columns: repeat(2, 1fr); }
 }

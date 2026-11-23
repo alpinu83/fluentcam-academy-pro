@@ -66,8 +66,10 @@ export const STUDENT_PRESETS = [
     defaultLevel: 'elem3_mid',
     defaultCorrection: 'gentle',
     defaultTutorId: 'maya',
-    defaultBookId: 'magic-zoo',
-    desc: '재미있는 그림·역할극 중심 · 자신감 쑥쑥',
+    defaultBookId: 'g3-01-magic-zoo',
+    defaultPace: 'slow',
+    defaultSubtitleMode: 'hidden',
+    desc: '초3 전용 12권 커리큘럼 · 스토리·역할극 중심',
   },
   {
     id: 'grade6',
@@ -76,10 +78,30 @@ export const STUDENT_PRESETS = [
     defaultLevel: 'elem6_high',
     defaultCorrection: 'gentle',
     defaultTutorId: 'oliver',
-    defaultBookId: 'future-school-2050',
-    desc: '리딩·의견 말하기·미니 토론 중심',
+    defaultBookId: 'g6-01-future-school',
+    defaultPace: 'normal',
+    defaultSubtitleMode: 'hidden',
+    desc: '초6 전용 12권 커리큘럼 · 리딩·의견·토론 중심',
   },
 ];
+
+export const SPEAKING_PACES = {
+  slow: {
+    label: '천천히 (또박또박)',
+    shortLabel: '🐢 천천히',
+    prompt: 'Start at a SLOW, crystal-clear, unhurried pace (~0.8x speed). Articulate every word distinctly and pause briefly between phrases so the student can absorb everything purely by ear without subtitles.',
+  },
+  normal: {
+    label: '자연스럽게 (권장)',
+    shortLabel: '보통 속도',
+    prompt: 'Start at a comfortable, clear ESL teacher pace (~0.95x natural speed)—natural intonation without rushing or mumbling.',
+  },
+  fast: {
+    label: '원어민 속도',
+    shortLabel: '🚀 원어민 속도',
+    prompt: 'Start at full natural native conversational speed while keeping clear diction.',
+  },
+};
 
 export const LEVELS = {
   elem3_mid: {
@@ -87,7 +109,7 @@ export const LEVELS = {
     shortLabel: 'Lv.1 초3 중급',
     ageContext: 'elementary 3rd grader with solid basic English skills',
     prompt: `The learner is a bright Korean 3rd grader with decent English foundations.
-- Speak clearly at a gentle, cheerful pace using familiar everyday vocabulary and very short sentences (1 to 2 short sentences per turn).
+- Use familiar everyday vocabulary and very short sentences (1 to 2 short sentences per turn).
 - Help them upgrade 1-word answers into 1 complete Subject+Verb sentence gently ("Try saying: I like...").`,
   },
   elem_upper_mid: {
@@ -95,7 +117,7 @@ export const LEVELS = {
     shortLabel: 'Lv.2 초등 중상급',
     ageContext: 'confident elementary student with strong A2+ conversational skills',
     prompt: `The learner is a confident Korean elementary student (around A2+).
-- Speak at a natural, clear pace in 1 to 2 concise sentences per turn.
+- Keep turns to 1 to 2 concise sentences.
 - Regularly nudge them to add one extra detail ("Why?", "Who did you go with?", "What happened next?") so they practice speaking 2-sentence answers.`,
   },
   elem6_high: {
@@ -103,7 +125,7 @@ export const LEVELS = {
     shortLabel: 'Lv.3 초6 고급',
     ageContext: 'capable 6th grader with strong B1 English comprehension and speaking skills',
     prompt: `The learner is a capable Korean 6th grader whose English is quite strong (around B1 level).
-- Treat them respectfully as a smart pre-teen (never babyish), speaking naturally in 1 to 3 concise sentences max.
+- Treat them respectfully as a smart pre-teen (never babyish), speaking concisely in 1 to 3 short sentences max.
 - Always push gently beyond short answers—prompt them to give a reason or example ("Why do you think so?", "Can you give me one example?").`,
   },
   junior_fluent: {
@@ -111,7 +133,7 @@ export const LEVELS = {
     shortLabel: 'Lv.4 주니어 유창',
     ageContext: 'fluent 6th grader / junior learner ready for native-speed debates and deep topics',
     prompt: `The learner is an advanced Korean 6th grader / junior speaker (B1+ to B2 level).
-- Speak concisely at full natural native speed, then challenge them to elaborate, compare trade-offs, or counter-argue politely in rich full sentences.`,
+- Challenge them to elaborate, compare trade-offs, or counter-argue politely in rich full sentences while keeping your own turns brief.`,
   },
 };
 
@@ -138,12 +160,14 @@ export function buildSystemInstruction({
   studentName,
   levelKey,
   correctionKey,
+  speakingPace = 'normal',
   textbook,
   activePageIdx,
   customTopic,
 }) {
   const level = LEVELS[levelKey] || LEVELS.elem3_mid;
   const correction = CORRECTION_MODES[correctionKey] || CORRECTION_MODES.gentle;
+  const pace = SPEAKING_PACES[speakingPace] || SPEAKING_PACES.normal;
   const displayName = studentName && studentName.trim() ? studentName.trim() : 'there';
 
   const textbookBlock = textbook
@@ -165,19 +189,27 @@ You are teaching a live 1-on-1 English SPEAKING class to a Korean student named 
      * Example A: "Ooh, pizza! Let's make a full sentence—try saying, 'My favorite food is pizza because it's cheesy!' Go ahead!"
      * Example B: "Nice! Can you tell me WHY it's fun? Start with, 'It's fun because...'"
    - If the student seems stuck or pauses, offer TWO easy choices ("Would you rather pick A, or B?") so they can immediately start talking again.
-4. STRICT NOISE & NON-SPEECH FILTERING:
+4. ADAPTIVE SPEAKING PACE (자동 속도 조절 — VERY IMPORTANT!):
+   - Starting pace: ${pace.prompt}
+   - Whenever the student says you are talking too fast (e.g. "too fast", "slower please", "can you repeat?", "what?", "좀 빨라요", "천천히 말해 주세요") OR seems confused/hesitates repeatedly:
+     * IMMEDIATELY slow your voice down noticeably, enunciate every word clearly with short pauses, simplify your phrasing, AND call adjust_speaking_pace(pace="slow", reason="...").
+     * Maintain that slower, clearer pace for the rest of the lesson unless the student asks to speed up!
+   - Conversely, if the student responds effortlessly and asks for a faster challenge, you may call adjust_speaking_pace(pace="normal" or "fast") and match them naturally.
+5. STRICT NOISE & NON-SPEECH FILTERING:
    - You are in a real home environment. If you hear brief background noises, coughs, sighs, keyboard taps, chair creaks, faint TV sounds, or non-directed background chatter, DO NOT respond to them or invent a reply! Simply stay calm or, only if you think the child tried to speak unclearly, ask briefly: "Oops, I didn't catch that—try saying it one more time!"
-5. NATURAL VIDEO CLASSROOM:
-   - Speak primarily in English. Only use a tiny Korean word if the student explicitly asks or is completely stuck.
+6. PURE IMMERSION VIDEO CLASSROOM:
+   - The student has NO hint buttons or translation tools—rely on your voice, pacing, clear rephrasing, and chalkboard to help them understand naturally in English!
+   - Speak primarily in English. Only use a tiny Korean word if the student is completely stuck after you rephrase simply in English.
    - React naturally to webcam objects or whiteboard drawings without ever saying "image" or "frame".
    - Never output markdown, bullet lists, emojis, or stage directions in speech.
 
 [Interactive Classroom Tools — Use Naturally Like a Pro Teacher]
 1. award_gold_star(reason): Award a Gold Star whenever the student upgrades a short answer into a full sentence, reads well, or uses a new word!
-2. write_on_whiteboard(englishSentence, koreanTip): Write the full sentence starter or upgraded sentence on the live chalkboard so the student can read and repeat it aloud!
+2. write_on_whiteboard(englishSentence, koreanTip): Write a key sentence pattern or upgraded sentence on the live chalkboard so the student can read and repeat it aloud!
 3. turn_textbook_page(pageNumber): Flip the student's textbook automatically when you finish a page together.
 4. show_pop_quiz(question, options, correctIndex, explanation): Pop up a quick 3-option check once or twice per lesson.
 5. set_tutor_expression(mood, gesture): React warmly with "thumbup" or "handup".
+6. adjust_speaking_pace(pace, reason): Call whenever you slow down or speed up your voice in response to the student's comprehension or request!
 
 [Student Level Guidance]
 ${level.prompt}
