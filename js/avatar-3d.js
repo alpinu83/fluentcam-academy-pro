@@ -13,6 +13,41 @@ export class Avatar3DController {
     this.ready = false;
     this.loading = false;
     this.currentUrl = null;
+    this._onVisibilityChange = null;
+  }
+
+  _sanitizeRigAndMorphs() {
+    if (!this.head?.scene) return;
+    this.head.scene.traverse((obj) => {
+      if (obj.isMesh && Array.isArray(obj.morphTargetInfluences)) {
+        for (let i = 0; i < obj.morphTargetInfluences.length; i++) {
+          const v = obj.morphTargetInfluences[i];
+          if (!Number.isFinite(v)) {
+            obj.morphTargetInfluences[i] = 0;
+          }
+        }
+      }
+      if (obj.isBone) {
+        if (
+          !Number.isFinite(obj.scale.x) ||
+          !Number.isFinite(obj.scale.y) ||
+          !Number.isFinite(obj.scale.z) ||
+          obj.scale.x < 0.7 ||
+          obj.scale.y < 0.7 ||
+          obj.scale.z < 0.7
+        ) {
+          obj.scale.set(1, 1, 1);
+        }
+        if (
+          !Number.isFinite(obj.quaternion.x) ||
+          !Number.isFinite(obj.quaternion.y) ||
+          !Number.isFinite(obj.quaternion.z) ||
+          !Number.isFinite(obj.quaternion.w)
+        ) {
+          obj.quaternion.identity();
+        }
+      }
+    });
   }
 
   async init({ avatarUrl, body = 'F', mood = 'happy' }) {
@@ -39,18 +74,18 @@ export class Avatar3DController {
         ttsEndpoint: 'N/A',
         lipsyncModules: [],
         cameraView: 'upper',
-        cameraDistance: -0.78,
-        cameraY: -0.02,
-        cameraRotateEnable: true,
+        cameraDistance: -0.45,
+        cameraY: 0.0,
+        cameraRotateEnable: false,
         cameraPanEnable: false,
         cameraZoomEnable: false,
         mixerGainSpeech: 1.9,
-        lightAmbientColor: 0xfff5ea,
-        lightAmbientIntensity: 1.9,
-        lightDirectColor: 0xfff1dc,
-        lightDirectIntensity: 2.2,
+        lightAmbientColor: 0xfff8f0,
+        lightAmbientIntensity: 2.0,
+        lightDirectColor: 0xfff4e6,
+        lightDirectIntensity: 5.5,
         lightSpotColor: 0xffe4c4,
-        lightSpotIntensity: 1.2,
+        lightSpotIntensity: 0,
       });
 
       this.onStatus?.('3D 튜터 모델 불러오는 중...');
@@ -69,6 +104,7 @@ export class Avatar3DController {
         }
       );
 
+      this._sanitizeRigAndMorphs();
       this.currentUrl = avatarUrl;
       this.head.start();
 
@@ -88,30 +124,46 @@ export class Avatar3DController {
       this.head.audioSpeechGainNode.connect(this.headaudio);
 
       this.headaudio.onvalue = (key, value) => {
+        if (!Number.isFinite(value)) return;
         if (this.head?.mtAvatar && this.head.mtAvatar[key]) {
+          const safe = Math.max(0, Math.min(1, value));
           Object.assign(this.head.mtAvatar[key], {
-            newvalue: value,
+            newvalue: safe,
             needsUpdate: true,
           });
         }
       };
 
-      this.head.opt.update = this.headaudio.update.bind(this.headaudio);
+      this.head.opt.update = (dt) => {
+        const safeDt = Number.isFinite(dt) ? Math.max(0, Math.min(dt, 100)) : 16;
+        try {
+          this.headaudio?.update(safeDt);
+        } catch {
+          // ignore
+        }
+        this._sanitizeRigAndMorphs();
+      };
 
       let lastEnded = 0;
       this.headaudio.onended = () => {
         lastEnded = Date.now();
       };
       this.headaudio.onstarted = () => {
-        if (Date.now() - lastEnded > 180) {
+        if (Date.now() - lastEnded > 200) {
           this.head?.lookAtCamera(500);
-          try {
-            this.head?.speakWithHands();
-          } catch {
-            // optional gesture
-          }
         }
       };
+
+      // Pause/resume animation on tab switch so frame delta never overflows
+      this._onVisibilityChange = () => {
+        if (!this.head) return;
+        if (document.visibilityState === 'visible') {
+          this.head.start();
+        } else {
+          this.head.stop();
+        }
+      };
+      document.addEventListener('visibilitychange', this._onVisibilityChange);
 
       this.head.lookAtCamera(600);
       this.ready = true;
@@ -162,6 +214,10 @@ export class Avatar3DController {
 
   async dispose() {
     this.ready = false;
+    if (this._onVisibilityChange) {
+      document.removeEventListener('visibilitychange', this._onVisibilityChange);
+      this._onVisibilityChange = null;
+    }
     try {
       if (this.headaudio) {
         this.headaudio.disconnect();

@@ -1368,7 +1368,7 @@ class TalkingHead {
         if ( ndx !== undefined ) {
           mtTemp[x].ms.push(y.morphTargetInfluences);
           mtTemp[x].is.push(ndx);
-          y.morphTargetInfluences[ndx] = mtTemp[x].applied;
+          y.morphTargetInfluences[ndx] = Number.isFinite(mtTemp[x].applied) ? mtTemp[x].applied : 0;
         }
       });
 
@@ -1829,8 +1829,9 @@ class TalkingHead {
         });
         break;
 
-      case 'chestInhale':
-        const scale = o.applied/20;
+      case 'chestInhale': {
+        const safeInhale = Number.isFinite(o.applied) ? Math.max(-0.5, Math.min(1, o.applied)) : 0;
+        const scale = safeInhale/20;
         const d = { x: scale, y: (scale/2), z: (3 * scale) };
         const dneg = { x: (1/(1+scale) - 1), y: (1/(1 + scale/2) - 1), z: (1/(1 + 3 * scale) - 1) };
         this.poseDelta.props['Spine1.scale'] = d;
@@ -1838,11 +1839,14 @@ class TalkingHead {
         this.poseDelta.props['LeftArm.scale'] = dneg;
         this.poseDelta.props['RightArm.scale'] = dneg;
         break;
+      }
 
-      default:
+      default: {
+        const safeVal = Number.isFinite(o.applied) ? o.applied : 0;
         for( let i=0,l=o.ms.length; i<l; i++ ) {
-          o.ms[i][o.is[i]] = o.applied;
+          o.ms[i][o.is[i]] = safeVal;
         }
+      }
 
       }
     }
@@ -2413,6 +2417,7 @@ class TalkingHead {
       dt = t - this.animTimeLast;
       if ( dt < this.animFrameDur ) return;
       this.animTimeLast = t;
+      if ( !Number.isFinite(dt) || dt > 100 ) dt = 33;
     }
     dt = dt / this.animSlowdownRate;
     this.animClock += dt;

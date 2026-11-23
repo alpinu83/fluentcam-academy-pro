@@ -127,7 +127,7 @@
       <div class="parent-tab-bar" role="tablist" aria-label="부모 관리 메뉴">
         <button type="button" class="parent-tab active" data-parent-tab="edu">1. 자녀별 교육·수업 세팅</button>
         <button type="button" class="parent-tab" data-parent-tab="dash">2. 성장 대시보드 · 수업 노트</button>
-        <button type="button" class="parent-tab" data-parent-tab="system">3. API 키 · 잡음 차단 · 비밀번호</button>
+        <button type="button" class="parent-tab" data-parent-tab="system">3. API 키 · 기기 동기화 · 잡음 · 비밀번호</button>
       </div>
 
       <!-- PARENT TAB 1: EDUCATION & CURRICULUM SETTINGS -->
@@ -437,6 +437,26 @@
           </div>
 
           <div style="display:flex;flex-direction:column;gap:18px;">
+            <div class="surface-card" style="display:flex;flex-direction:column;gap:12px;">
+              <div class="card-header-row">
+                <h2 class="section-label">📱 다른 기기로 가족 설정 동기화</h2>
+                <span class="status-text">PC · 노트북 · 태블릿</span>
+              </div>
+              <p class="status-text" style="margin:0;line-height:1.55;">
+                설정은 기본적으로 이 브라우저에만 저장됩니다. 다른 기기(아이 태블릿·노트북 등)에서도 초3·초6 설정, AI 교재, API 키를 그대로 쓰려면 아래 <b>동기화 링크</b>를 복사해 카톡 '나에게 보내기' 등으로 열어주세요. (URL <code>#해시</code> 방식이라 외부 서버로 전송되지 않습니다.)
+              </p>
+              <label class="inline-switch">
+                <input id="syncIncludeKeyCheckbox" type="checkbox" checked />
+                <span>Gemini API 키도 함께 포함하기 (가족 기기 전용)</span>
+              </label>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                <button id="copySyncLinkBtn" class="btn btn-primary btn-sm" type="button">🔗 원클릭 동기화 링크 복사</button>
+                <button id="exportBackupBtn" class="btn btn-secondary btn-sm" type="button">💾 전체 백업 저장 (.json)</button>
+                <button id="importBackupBtn" class="btn btn-secondary btn-sm" type="button">📂 백업 불러오기</button>
+                <input id="importBackupInput" type="file" accept="application/json,.json" class="hidden" />
+              </div>
+            </div>
+
             <div class="surface-card">
               <div class="card-header-row">
                 <h2 class="section-label">카메라 &amp; 마이크 사전 점검</h2>

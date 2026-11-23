@@ -28,6 +28,8 @@ const STORAGE_KEYS = {
   SETTINGS: 'fluentcam_academy_pro_v4',
   HISTORY: 'fluentcam_history_v1',
   PARENT_PIN: 'fluentcam_parent_pin_v1',
+  AI_BOOKS: 'fluentcam_ai_generated_books_v1',
+  FSRS_DECK: 'fluentcam_fsrs_deck_v1',
 };
 
 const LEGACY_BOOK_ID_MAP = {
@@ -224,6 +226,12 @@ const el = {
   reportModelSelect: document.getElementById('reportModelSelect'),
   videoIntervalSelect: document.getElementById('videoIntervalSelect'),
   enableToolsCheckbox: document.getElementById('enableToolsCheckbox'),
+
+  syncIncludeKeyCheckbox: document.getElementById('syncIncludeKeyCheckbox'),
+  copySyncLinkBtn: document.getElementById('copySyncLinkBtn'),
+  exportBackupBtn: document.getElementById('exportBackupBtn'),
+  importBackupBtn: document.getElementById('importBackupBtn'),
+  importBackupInput: document.getElementById('importBackupInput'),
 
   pinStatusHint: document.getElementById('pinStatusHint'),
   changePinForm: document.getElementById('changePinForm'),
@@ -2667,14 +2675,156 @@ function bindEvents() {
     if (e.target === el.historyModal) el.historyModal.classList.add('hidden');
   });
 
+  // Cross-device family sync & backup
+  el.copySyncLinkBtn.addEventListener('click', handleCopySyncLink);
+  el.exportBackupBtn.addEventListener('click', handleExportBackup);
+  el.importBackupBtn.addEventListener('click', () => el.importBackupInput.click());
+  el.importBackupInput.addEventListener('change', handleImportBackupFile);
+
   academyPages.bindSubpageEvents();
+}
+
+// ==================== CROSS-DEVICE FAMILY SYNC & BACKUP ====================
+function encodeSyncPayload(obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodeSyncPayload(encoded) {
+  const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b64.length % 4 ? '='.repeat(4 - (b64.length % 4)) : '';
+  const bin = atob(b64 + pad);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function buildFamilySyncBundle({ includeApiKey = true, includeLearningData = false } = {}) {
+  saveSettings();
+  const safeParse = (k, fallback) => {
+    try {
+      const raw = localStorage.getItem(k);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const bundle = {
+    v: 1,
+    exportedAt: Date.now(),
+    settings: safeParse(STORAGE_KEYS.SETTINGS, null),
+    pin: localStorage.getItem(STORAGE_KEYS.PARENT_PIN) || '0000',
+    aiBooks: safeParse(STORAGE_KEYS.AI_BOOKS, []),
+  };
+  if (includeApiKey) {
+    const key = el.apiKeyInput.value.trim() || localStorage.getItem(STORAGE_KEYS.API_KEY) || '';
+    if (key) bundle.apiKey = key;
+  }
+  if (includeLearningData) {
+    bundle.history = safeParse(STORAGE_KEYS.HISTORY, []);
+    bundle.fsrsDeck = safeParse(STORAGE_KEYS.FSRS_DECK, []);
+  }
+  return bundle;
+}
+
+function applyFamilySyncBundle(bundle) {
+  if (!bundle || typeof bundle !== 'object') return false;
+  if (bundle.apiKey && typeof bundle.apiKey === 'string') {
+    localStorage.setItem(STORAGE_KEYS.API_KEY, bundle.apiKey.trim());
+  }
+  if (bundle.settings && typeof bundle.settings === 'object') {
+    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(bundle.settings));
+  }
+  if (bundle.pin && /^\d{4}$/.test(String(bundle.pin))) {
+    localStorage.setItem(STORAGE_KEYS.PARENT_PIN, String(bundle.pin));
+  }
+  if (Array.isArray(bundle.aiBooks)) {
+    localStorage.setItem(STORAGE_KEYS.AI_BOOKS, JSON.stringify(bundle.aiBooks.slice(0, 40)));
+  }
+  if (Array.isArray(bundle.history)) {
+    localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(bundle.history.slice(0, 50)));
+  }
+  if (Array.isArray(bundle.fsrsDeck)) {
+    localStorage.setItem(STORAGE_KEYS.FSRS_DECK, JSON.stringify(bundle.fsrsDeck.slice(0, 300)));
+  }
+  return true;
+}
+
+function tryApplySyncFromUrlHash() {
+  const hash = window.location.hash || '';
+  if (!hash.startsWith('#sync=')) return false;
+  try {
+    const encoded = hash.slice(6).trim();
+    const bundle = decodeSyncPayload(encoded);
+    const ok = applyFamilySyncBundle(bundle);
+    // Immediately strip #sync=... from URL bar so API key never stays visible
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    return ok;
+  } catch (err) {
+    console.warn('Sync link decode failed:', err);
+    return false;
+  }
+}
+
+async function handleCopySyncLink() {
+  const includeApiKey = Boolean(el.syncIncludeKeyCheckbox.checked);
+  const bundle = buildFamilySyncBundle({ includeApiKey, includeLearningData: false });
+  const encoded = encodeSyncPayload(bundle);
+  const baseUrl = `${window.location.origin}${window.location.pathname}`;
+  const syncUrl = `${baseUrl}#sync=${encoded}`;
+
+  try {
+    await navigator.clipboard.writeText(syncUrl);
+    showToast('동기화 링크가 복사되었습니다! 카톡 등으로 다른 기기에 보내 클릭해 주세요.', 4200);
+  } catch {
+    window.prompt('아래 동기화 링크를 복사해 다른 기기 브라우저에서 열어 주세요:', syncUrl);
+  }
+}
+
+function handleExportBackup() {
+  const includeApiKey = Boolean(el.syncIncludeKeyCheckbox.checked);
+  const bundle = buildFamilySyncBundle({ includeApiKey, includeLearningData: true });
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `fluentcam-family-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('가족 전체 설정·수업 노트·복습장 백업 파일을 저장했습니다!');
+}
+
+async function handleImportBackupFile(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const bundle = JSON.parse(text);
+    if (!applyFamilySyncBundle(bundle)) {
+      throw new Error('올바른 FluentCam 백업 파일이 아닙니다.');
+    }
+    restoreSettings();
+    renderParentEducationTab();
+    syncParentSystemControls();
+    updateBadges();
+    showToast('백업 파일에서 모든 가족 설정과 학습 기록을 복원했어요!', 3800);
+  } catch (err) {
+    showToast(`백업 불러오기 실패: ${err.message}`, 4000);
+  }
 }
 
 // ==================== INIT ====================
 function init() {
+  const synced = tryApplySyncFromUrlHash();
   restoreSettings();
   bindEvents();
   switchView('kidhome');
+  if (synced) {
+    showToast('다른 기기의 가족 설정(자녀 프로필·교재·API 키)을 모두 불러왔어요!', 4500);
+  }
 }
 
 init();
