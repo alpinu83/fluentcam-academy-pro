@@ -21,8 +21,9 @@ import {
 
 const STORAGE_KEYS = {
   API_KEY: 'fluentcam_gemini_api_key',
-  SETTINGS: 'fluentcam_academy_pro_v3',
+  SETTINGS: 'fluentcam_academy_pro_v4',
   HISTORY: 'fluentcam_history_v1',
+  PARENT_PIN: 'fluentcam_parent_pin_v1',
 };
 
 const SUBTITLE_MODES = [
@@ -31,37 +32,51 @@ const SUBTITLE_MODES = [
   { key: 'hidden', label: '자막 꺼짐' },
 ];
 
+const NOISE_LABELS = {
+  low: '잡음 차단: 약함',
+  medium: '잡음 차단: 보통',
+  high: '잡음 차단: 강함',
+};
+
 const defaultProfiles = {
   grade3: {
     name: '초3 학생',
     levelKey: 'elem3_mid',
     correctionKey: 'gentle',
+    tutorId: 'maya',
     bookMode: 'library',
     selectedBookId: 'magic-zoo',
+    customBookTitle: '',
+    customBookContent: '',
+    customTopic: '',
     stars: 0,
   },
   grade6: {
     name: '초6 학생',
     levelKey: 'elem6_high',
     correctionKey: 'gentle',
+    tutorId: 'oliver',
     bookMode: 'library',
     selectedBookId: 'future-school-2050',
+    customBookTitle: '',
+    customBookContent: '',
+    customTopic: '',
     stars: 0,
   },
 };
 
 const state = {
-  activeView: 'lobby',
+  activeView: 'kidhome', // 'kidhome' | 'parent' | 'review' | 'leveltest' | 'call' | 'report'
+  parentUnlocked: false,
+  activeParentTab: 'edu', // 'edu' | 'dash' | 'system'
+
   activeStudentId: 'grade3',
   profiles: structuredClone(defaultProfiles),
 
+  // Mirrored from active student profile
   selectedTutorId: 'maya',
   levelKey: 'elem3_mid',
   correctionKey: 'gentle',
-  avatarMode: '3d', // '3d' | 'portrait'
-  enableTools: true,
-
-  // Textbook / Mode state
   bookFilter: 'all',
   bookMode: 'library',
   selectedBookId: 'magic-zoo',
@@ -69,9 +84,16 @@ const state = {
   customBookContent: '',
   customTopic: '',
 
+  // Global classroom & noise controls (configured in Parent Admin)
+  avatarMode: '3d', // '3d' | 'portrait'
+  enableTools: true,
+  noiseSensitivity: 'medium', // 'low' | 'medium' | 'high'
+  speechMode: 'auto', // 'auto' | 'ptt'
+
   // Preview modal
   previewBookId: null,
   previewPageIdx: 0,
+  previewReadOnly: false,
 
   // Model & streaming
   liveModel: 'gemini-3.8-live',
@@ -94,6 +116,8 @@ const state = {
   audioPlayer: null,
   avatar3d: null,
   using3dInCall: false,
+  callPttMode: false,
+  pttPressed: false,
   videoTimerId: null,
   callTimerId: null,
   callStartMs: 0,
@@ -130,11 +154,34 @@ const el = {
   historyCountBadge: document.getElementById('historyCountBadge'),
   reviewDueBadge: document.getElementById('reviewDueBadge'),
   headerStarCount: document.getElementById('headerStarCount'),
+  openParentGateBtn: document.getElementById('openParentGateBtn'),
+  parentGateBtnLabel: document.getElementById('parentGateBtnLabel'),
 
-  lobbyView: document.getElementById('lobbyView'),
+  // Kid Home
+  kidHomeView: document.getElementById('kidHomeView'),
+  kidApiNotice: document.getElementById('kidApiNotice'),
+  kidNoticeOpenParentBtn: document.getElementById('kidNoticeOpenParentBtn'),
+  kidProfileCards: document.getElementById('kidProfileCards'),
+  kidLaunchTutorImg: document.getElementById('kidLaunchTutorImg'),
+  kidLaunchBadge: document.getElementById('kidLaunchBadge'),
+  kidLaunchTitle: document.getElementById('kidLaunchTitle'),
+  kidLaunchSub: document.getElementById('kidLaunchSub'),
+  kidLaunchModeChip: document.getElementById('kidLaunchModeChip'),
+  kidLaunchNoiseChip: document.getElementById('kidLaunchNoiseChip'),
+  kidStartCallBtn: document.getElementById('kidStartCallBtn'),
+  kidPreviewBookBtn: document.getElementById('kidPreviewBookBtn'),
+  kidGoReviewBtn: document.getElementById('kidGoReviewBtn'),
+  kidHomeError: document.getElementById('kidHomeError'),
+
+  // Parent View
+  parentView: document.getElementById('parentView'),
+  lockParentBtn: document.getElementById('lockParentBtn'),
+  parentTabEdu: document.getElementById('parentTabEdu'),
+  parentTabDash: document.getElementById('parentTabDash'),
+  parentTabSystem: document.getElementById('parentTabSystem'),
+
   levelTestView: document.getElementById('levelTestView'),
   reviewView: document.getElementById('reviewView'),
-  dashboardView: document.getElementById('dashboardView'),
 
   studentPresetGrid: document.getElementById('studentPresetGrid'),
   studentNameInput: document.getElementById('studentNameInput'),
@@ -150,11 +197,25 @@ const el = {
   apiKeyInput: document.getElementById('apiKeyInput'),
   toggleApiKeyVisBtn: document.getElementById('toggleApiKeyVisBtn'),
   avatarModePills: document.getElementById('avatarModePills'),
+  noiseGateCards: document.getElementById('noiseGateCards'),
+  speechModePills: document.getElementById('speechModePills'),
   liveModelSelect: document.getElementById('liveModelSelect'),
   customLiveModelInput: document.getElementById('customLiveModelInput'),
   reportModelSelect: document.getElementById('reportModelSelect'),
   videoIntervalSelect: document.getElementById('videoIntervalSelect'),
   enableToolsCheckbox: document.getElementById('enableToolsCheckbox'),
+
+  pinStatusHint: document.getElementById('pinStatusHint'),
+  changePinForm: document.getElementById('changePinForm'),
+  newPinInput: document.getElementById('newPinInput'),
+  confirmPinInput: document.getElementById('confirmPinInput'),
+
+  pinModal: document.getElementById('pinModal'),
+  closePinModalBtn: document.getElementById('closePinModalBtn'),
+  pinUnlockForm: document.getElementById('pinUnlockForm'),
+  pinModalHint: document.getElementById('pinModalHint'),
+  pinUnlockInput: document.getElementById('pinUnlockInput'),
+  pinErrorMsg: document.getElementById('pinErrorMsg'),
 
   quickLevelTestBtn: document.getElementById('quickLevelTestBtn'),
   levelPills: document.getElementById('levelPills'),
@@ -171,10 +232,9 @@ const el = {
 
   tutorGrid: document.getElementById('tutorGrid'),
   selectedTutorSummary: document.getElementById('selectedTutorSummary'),
-  lobbyError: document.getElementById('lobbyError'),
-  startCallBtn: document.getElementById('startCallBtn'),
   previewSampleReportBtn: document.getElementById('previewSampleReportBtn'),
 
+  // Call View
   callView: document.getElementById('callView'),
   tutorStageCard: document.getElementById('tutorStageCard'),
   callAvatar3dMount: document.getElementById('callAvatar3dMount'),
@@ -182,6 +242,7 @@ const el = {
   callTutorImg: document.getElementById('callTutorImg'),
   callTutorName: document.getElementById('callTutorName'),
   callTutorState: document.getElementById('callTutorState'),
+  callNoiseGateBadge: document.getElementById('callNoiseGateBadge'),
   callStarCount: document.getElementById('callStarCount'),
   callStudentChip: document.getElementById('callStudentChip'),
   visionSharingBadge: document.getElementById('visionSharingBadge'),
@@ -208,6 +269,10 @@ const el = {
   popQuizOptions: document.getElementById('popQuizOptions'),
   popQuizFeedback: document.getElementById('popQuizFeedback'),
   closePopQuizBtn: document.getElementById('closePopQuizBtn'),
+
+  pttHoldBtn: document.getElementById('pttHoldBtn'),
+  togglePttModeBtn: document.getElementById('togglePttModeBtn'),
+  togglePttModeLabel: document.getElementById('togglePttModeLabel'),
 
   micToggleBtn: document.getElementById('micToggleBtn'),
   micToggleLabel: document.getElementById('micToggleLabel'),
@@ -262,6 +327,7 @@ const el = {
   chatTextForm: document.getElementById('chatTextForm'),
   chatTextInput: document.getElementById('chatTextInput'),
 
+  // Report View
   reportView: document.getElementById('reportView'),
   reportLoading: document.getElementById('reportLoading'),
   reportContent: document.getElementById('reportContent'),
@@ -311,68 +377,79 @@ function showToast(msg, duration = 2600) {
   toastTimer = setTimeout(() => el.toast.classList.add('hidden'), duration);
 }
 
-function showLobbyError(msg) {
+function showKidError(msg) {
   if (!msg) {
-    el.lobbyError.classList.add('hidden');
-    el.lobbyError.textContent = '';
+    el.kidHomeError.classList.add('hidden');
+    el.kidHomeError.textContent = '';
     return;
   }
-  el.lobbyError.textContent = msg;
-  el.lobbyError.classList.remove('hidden');
+  el.kidHomeError.textContent = msg;
+  el.kidHomeError.classList.remove('hidden');
+}
+
+function getParentPin() {
+  return localStorage.getItem(STORAGE_KEYS.PARENT_PIN) || '0000';
+}
+
+function getProfile(studentId = state.activeStudentId) {
+  return state.profiles[studentId] || state.profiles.grade3;
+}
+
+function getTutorById(id) {
+  return TUTORS.find((t) => t.id === id) || TUTORS[0];
 }
 
 function getSelectedTutor() {
-  return TUTORS.find((t) => t.id === state.selectedTutorId) || TUTORS[0];
+  return getTutorById(state.selectedTutorId);
 }
 
-function getActiveProfile() {
-  return state.profiles[state.activeStudentId] || state.profiles.grade3;
+function getStudentDisplayName(studentId = state.activeStudentId) {
+  const p = getProfile(studentId);
+  if (p.name && p.name.trim()) return p.name.trim();
+  return studentId === 'grade6' ? '초6 학생' : '초3 학생';
 }
 
-function getStudentDisplayName() {
-  const name = getActiveProfile().name?.trim();
-  if (name) return name;
-  return state.activeStudentId === 'grade6' ? '초6 학생' : '초3 학생';
-}
-
-function getSelectedTextbookObj() {
-  if (state.bookMode === 'freetalk') return null;
-  if (state.bookMode === 'custom') {
-    const content = state.customBookContent.trim();
+function getTextbookForProfile(p) {
+  if (p.bookMode === 'freetalk') return null;
+  if (p.bookMode === 'custom') {
+    const content = (p.customBookContent || '').trim();
     if (!content) return null;
     return {
       id: 'custom-book',
-      gradeTag: state.activeStudentId === 'grade6' ? '초6 직접 교재' : '초3 직접 교재',
-      levelRange: LEVELS[state.levelKey]?.shortLabel || '',
-      title: state.customBookTitle.trim() || '직접 입력한 영어 교재',
+      gradeTag: '직접 입력 교재',
+      levelRange: LEVELS[p.levelKey]?.shortLabel || '',
+      title: (p.customBookTitle || '').trim() || '직접 입력한 영어 교재',
+      cover: 'assets/book_future_school.jpg',
       customContent: content,
       pages: [
         {
           step: 'Custom Lesson Material',
-          heading: state.customBookTitle.trim() || '내 수업 지문',
+          heading: (p.customBookTitle || '').trim() || '내 수업 지문',
           instructionKo: '선생님과 함께 지문을 읽고 궁금한 표현을 질문해 보세요.',
-          readingTitle: state.customBookTitle.trim() || 'Reading Passage',
-          readingParagraphs: content
-            .split(/\n{2,}/)
-            .map((p) => p.trim())
-            .filter(Boolean),
+          readingTitle: (p.customBookTitle || '').trim() || 'Reading Passage',
+          readingParagraphs: content.split(/\n{2,}/).map((x) => x.trim()).filter(Boolean),
         },
       ],
     };
   }
-  return TEXTBOOKS.find((b) => b.id === state.selectedBookId) || TEXTBOOKS[0];
+  return TEXTBOOKS.find((b) => b.id === p.selectedBookId) || TEXTBOOKS[0];
+}
+
+function getSelectedTextbookObj() {
+  syncCurrentProfileFields();
+  return getTextbookForProfile(getProfile());
+}
+
+function getLessonTitleLabel(p = getProfile()) {
+  const book = getTextbookForProfile(p);
+  if (book) return book.title;
+  if (p.customTopic && p.customTopic.trim()) return `프리토킹 · ${p.customTopic.trim()}`;
+  return '자유 프리토킹';
 }
 
 function getActiveLiveModel() {
   if (state.liveModel === 'custom') return state.customLiveModel.trim() || 'gemini-3.8-live';
   return state.liveModel;
-}
-
-function getLessonTitleLabel() {
-  const book = getSelectedTextbookObj();
-  if (book) return book.title;
-  if (state.customTopic.trim()) return `프리토킹 · ${state.customTopic.trim()}`;
-  return '자유 프리토킹';
 }
 
 function formatDuration(sec) {
@@ -425,19 +502,46 @@ function updateBadges() {
     (c) => c.studentId === state.activeStudentId && (c.due || 0) <= Date.now()
   ).length;
   el.reviewDueBadge.textContent = String(dueCount);
-  el.headerStarCount.textContent = String(getActiveProfile().stars || 0);
+  el.headerStarCount.textContent = String(getProfile().stars || 0);
 
   const studentHist = hist.filter((h) => h.studentId === state.activeStudentId);
   const streak = academyPages.computeStreakDays(studentHist);
-  el.profileStreakText.textContent = `연속 학습 ${streak}일 · ★ ${getActiveProfile().stars || 0}`;
+  el.profileStreakText.textContent = `연속 학습 ${streak}일 · ★ ${getProfile().stars || 0}`;
+
+  el.parentGateBtnLabel.textContent = state.parentUnlocked ? '🔓 부모 관리 중' : '🔒 부모 관리';
 }
 
 function syncCurrentProfileFields() {
-  const p = getActiveProfile();
+  const p = getProfile();
   p.levelKey = state.levelKey;
   p.correctionKey = state.correctionKey;
+  p.tutorId = state.selectedTutorId;
   p.bookMode = state.bookMode;
   p.selectedBookId = state.selectedBookId;
+  p.customBookTitle = state.customBookTitle;
+  p.customBookContent = state.customBookContent;
+  p.customTopic = state.customTopic;
+}
+
+function applyActiveProfileToState() {
+  const p = getProfile();
+  state.levelKey = LEVELS[p.levelKey] ? p.levelKey : 'elem3_mid';
+  state.correctionKey = CORRECTION_MODES[p.correctionKey] ? p.correctionKey : 'gentle';
+  state.selectedTutorId = TUTORS.some((t) => t.id === p.tutorId)
+    ? p.tutorId
+    : state.activeStudentId === 'grade6'
+      ? 'oliver'
+      : 'maya';
+  state.bookMode = p.bookMode || 'library';
+  state.selectedBookId = TEXTBOOKS.some((b) => b.id === p.selectedBookId)
+    ? p.selectedBookId
+    : state.activeStudentId === 'grade6'
+      ? 'future-school-2050'
+      : 'magic-zoo';
+  state.customBookTitle = p.customBookTitle || '';
+  state.customBookContent = p.customBookContent || '';
+  state.customTopic = p.customTopic || '';
+  state.bookFilter = state.bookMode === 'custom' ? 'custom' : state.bookMode === 'freetalk' ? 'freetalk' : 'all';
 }
 
 function saveSettings() {
@@ -447,31 +551,18 @@ function saveSettings() {
     JSON.stringify({
       activeStudentId: state.activeStudentId,
       profiles: state.profiles,
-      selectedTutorId: state.selectedTutorId,
       avatarMode: state.avatarMode,
       enableTools: state.enableTools,
+      noiseSensitivity: state.noiseSensitivity,
+      speechMode: state.speechMode,
       liveModel: state.liveModel,
       customLiveModel: state.customLiveModel,
       reportModel: state.reportModel,
       videoIntervalMs: state.videoIntervalMs,
       shareCamera: state.shareCamera,
-      customBookTitle: state.customBookTitle,
-      customBookContent: state.customBookContent,
     })
   );
   updateBadges();
-}
-
-function applyActiveProfileToState() {
-  const p = getActiveProfile();
-  state.levelKey = LEVELS[p.levelKey] ? p.levelKey : 'elem3_mid';
-  state.correctionKey = CORRECTION_MODES[p.correctionKey] ? p.correctionKey : 'gentle';
-  state.bookMode = p.bookMode || 'library';
-  state.selectedBookId = TEXTBOOKS.some((b) => b.id === p.selectedBookId)
-    ? p.selectedBookId
-    : state.activeStudentId === 'grade6'
-      ? 'future-school-2050'
-      : 'magic-zoo';
 }
 
 function restoreSettings() {
@@ -479,47 +570,56 @@ function restoreSettings() {
   if (savedKey) el.apiKeyInput.value = savedKey;
 
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-    if (!raw) {
-      applyActiveProfileToState();
-      return;
+    const raw =
+      localStorage.getItem(STORAGE_KEYS.SETTINGS) ||
+      localStorage.getItem('fluentcam_academy_pro_v3');
+    if (raw) {
+      const saved = JSON.parse(raw);
+      if (saved.profiles) {
+        state.profiles = {
+          grade3: { ...defaultProfiles.grade3, ...(saved.profiles.grade3 || {}) },
+          grade6: { ...defaultProfiles.grade6, ...(saved.profiles.grade6 || {}) },
+        };
+      }
+      if (saved.activeStudentId && state.profiles[saved.activeStudentId]) {
+        state.activeStudentId = saved.activeStudentId;
+      }
+      if (saved.avatarMode === '3d' || saved.avatarMode === 'portrait') state.avatarMode = saved.avatarMode;
+      if (typeof saved.enableTools === 'boolean') state.enableTools = saved.enableTools;
+      if (['low', 'medium', 'high'].includes(saved.noiseSensitivity)) state.noiseSensitivity = saved.noiseSensitivity;
+      if (['auto', 'ptt'].includes(saved.speechMode)) state.speechMode = saved.speechMode;
+      if (saved.liveModel) state.liveModel = saved.liveModel;
+      if (saved.customLiveModel) state.customLiveModel = saved.customLiveModel;
+      if (saved.reportModel) state.reportModel = saved.reportModel;
+      if (typeof saved.videoIntervalMs === 'number') state.videoIntervalMs = saved.videoIntervalMs;
+      if (typeof saved.shareCamera === 'boolean') state.shareCamera = saved.shareCamera;
     }
-    const saved = JSON.parse(raw);
-    if (saved.profiles) {
-      state.profiles = {
-        grade3: { ...defaultProfiles.grade3, ...(saved.profiles.grade3 || {}) },
-        grade6: { ...defaultProfiles.grade6, ...(saved.profiles.grade6 || {}) },
-      };
-    }
-    if (saved.activeStudentId && state.profiles[saved.activeStudentId]) {
-      state.activeStudentId = saved.activeStudentId;
-    }
-    if (saved.selectedTutorId && TUTORS.some((t) => t.id === saved.selectedTutorId)) {
-      state.selectedTutorId = saved.selectedTutorId;
-    }
-    if (saved.avatarMode === '3d' || saved.avatarMode === 'portrait') {
-      state.avatarMode = saved.avatarMode;
-    }
-    if (typeof saved.enableTools === 'boolean') state.enableTools = saved.enableTools;
-    if (saved.liveModel) state.liveModel = saved.liveModel;
-    if (saved.customLiveModel) state.customLiveModel = saved.customLiveModel;
-    if (saved.reportModel) state.reportModel = saved.reportModel;
-    if (typeof saved.videoIntervalMs === 'number') state.videoIntervalMs = saved.videoIntervalMs;
-    if (typeof saved.shareCamera === 'boolean') state.shareCamera = saved.shareCamera;
-    if (typeof saved.customBookTitle === 'string') state.customBookTitle = saved.customBookTitle;
-    if (typeof saved.customBookContent === 'string') state.customBookContent = saved.customBookContent;
   } catch {
     // ignore
   }
   applyActiveProfileToState();
 }
 
+function setParentTab(tabName) {
+  state.activeParentTab = tabName;
+  document.querySelectorAll('[data-parent-tab]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.parentTab === tabName);
+  });
+  el.parentTabEdu.classList.toggle('hidden', tabName !== 'edu');
+  el.parentTabDash.classList.toggle('hidden', tabName !== 'dash');
+  el.parentTabSystem.classList.toggle('hidden', tabName !== 'system');
+
+  if (tabName === 'edu') renderParentEducationTab();
+  if (tabName === 'dash') academyPages.renderDashboardPage();
+  if (tabName === 'system') syncParentSystemControls();
+}
+
 function switchView(viewName) {
   state.activeView = viewName;
-  el.lobbyView.classList.toggle('hidden', viewName !== 'lobby');
+  el.kidHomeView.classList.toggle('hidden', viewName !== 'kidhome');
+  el.parentView.classList.toggle('hidden', viewName !== 'parent');
   el.levelTestView.classList.toggle('hidden', viewName !== 'leveltest');
   el.reviewView.classList.toggle('hidden', viewName !== 'review');
-  el.dashboardView.classList.toggle('hidden', viewName !== 'dashboard');
   el.callView.classList.toggle('hidden', viewName !== 'call');
   el.reportView.classList.toggle('hidden', viewName !== 'report');
   el.topHeader.classList.toggle('hidden', viewName === 'call');
@@ -528,10 +628,11 @@ function switchView(viewName) {
     btn.classList.toggle('active', btn.dataset.nav === viewName);
   });
 
-  if (viewName === 'lobby') renderAllLobby();
+  if (viewName === 'kidhome') renderKidHome();
+  if (viewName === 'parent') setParentTab(state.activeParentTab);
   if (viewName === 'leveltest') academyPages.renderLevelTest();
   if (viewName === 'review') academyPages.renderReviewPage();
-  if (viewName === 'dashboard') academyPages.renderDashboardPage();
+  updateBadges();
 }
 
 const academyPages = createAcademyPages({
@@ -548,7 +649,7 @@ const academyPages = createAcademyPages({
       state.selectedBookId = bookId;
     }
     saveSettings();
-    switchView('lobby');
+    switchView('kidhome');
     showToast('CEFR 진단 추천 레벨과 교재를 바로 적용했어요!');
   },
   onJumpToBook: (bookId) => {
@@ -556,12 +657,100 @@ const academyPages = createAcademyPages({
     state.bookFilter = 'all';
     state.selectedBookId = bookId;
     saveSettings();
-    switchView('lobby');
-    showToast('선택한 교재로 바로 수업을 시작할 준비가 되었어요!');
+    setParentTab('edu');
+    showToast('선택한 교재를 현재 학생에게 배정했어요!');
   },
   onOpenReport: (session) => renderReportView(session),
   onDeckChanged: () => updateBadges(),
 });
+
+// ==================== KID-SIMPLE LAUNCH HOME ====================
+function renderKidHome() {
+  showKidError('');
+  const hasKey = Boolean(el.apiKeyInput.value.trim());
+  el.kidApiNotice.classList.toggle('hidden', hasKey);
+
+  const hist = loadHistory();
+  el.kidProfileCards.innerHTML = STUDENT_PRESETS.map((preset) => {
+    const p = getProfile(preset.id);
+    const active = state.activeStudentId === preset.id;
+    const tutor = getTutorById(p.tutorId);
+    const book = getTextbookForProfile(p);
+    const bookTitle = book ? book.title : getLessonTitleLabel(p);
+    const bookThumb = book?.cover || tutor.avatar;
+    const streak = academyPages.computeStreakDays(hist.filter((h) => h.studentId === preset.id));
+
+    return `
+      <button type="button" class="kid-profile-card ${active ? 'selected' : ''}" data-kid-select="${preset.id}" role="radio" aria-checked="${active}">
+        <div class="kid-profile-top">
+          <span class="kid-grade-tag">${preset.badge} · ${LEVELS[p.levelKey]?.shortLabel || ''}</span>
+          <span class="kid-stars-mini">★ ${p.stars || 0} · ${streak}일 연속</span>
+        </div>
+        <div>
+          <div class="kid-profile-name">${escapeHtml(p.name || preset.defaultName)}</div>
+          <div class="kid-profile-level">담당 선생님: ${tutor.name} (${tutor.accentLabel})</div>
+        </div>
+        <div class="kid-assigned-row">
+          <img src="${bookThumb}" alt="" />
+          <div style="min-width:0;">
+            <strong>${escapeHtml(bookTitle)}</strong>
+            <span>${book ? `${book.pages.length}쪽 인터랙티브 교재` : '자유 영어 회화'}</span>
+          </div>
+        </div>
+      </button>
+    `;
+  }).join('');
+
+  el.kidProfileCards.querySelectorAll('[data-kid-select]').forEach((card) => {
+    card.addEventListener('click', () => {
+      syncCurrentProfileFields();
+      state.activeStudentId = card.dataset.kidSelect;
+      applyActiveProfileToState();
+      saveSettings();
+      renderKidHome();
+    });
+  });
+
+  // Update Launch Card for selected kid
+  const curName = getStudentDisplayName();
+  const curTutor = getSelectedTutor();
+  const curBook = getSelectedTextbookObj();
+  const curLevel = LEVELS[state.levelKey]?.shortLabel || '';
+
+  el.kidLaunchTutorImg.src = curTutor.avatar;
+  el.kidLaunchBadge.textContent = `${curName} · ${curLevel}`;
+  el.kidLaunchTitle.textContent = `${curTutor.name} 선생님과 수업 시작하기`;
+  el.kidLaunchSub.textContent = curBook
+    ? `오늘의 교재: ${curBook.title} (${curBook.titleKo || curBook.gradeTag})`
+    : `오늘의 수업: ${getLessonTitleLabel()}`;
+  el.kidLaunchModeChip.textContent = state.avatarMode === '3d' ? '3D 실시간 립싱크 아바타' : '실사 스튜디오 화면';
+  el.kidLaunchNoiseChip.textContent =
+    state.speechMode === 'ptt' ? '눌러서 말하기 모드' : NOISE_LABELS[state.noiseSensitivity] || '잡음 차단 ON';
+  el.kidPreviewBookBtn.classList.toggle('hidden', !curBook || curBook.id === 'custom-book');
+}
+
+// ==================== PARENT PIN GATE ====================
+function openPinModal() {
+  if (state.parentUnlocked) {
+    switchView('parent');
+    return;
+  }
+  const isDefault = getParentPin() === '0000';
+  el.pinModalHint.innerHTML = isDefault
+    ? '4자리 숫자 비밀번호를 입력해 주세요. (최초 기본값: <strong>0000</strong>)'
+    : '부모 관리 4자리 숫자 비밀번호를 입력해 주세요.';
+  el.pinUnlockInput.value = '';
+  el.pinErrorMsg.classList.add('hidden');
+  el.pinModal.classList.remove('hidden');
+  setTimeout(() => el.pinUnlockInput.focus(), 60);
+}
+
+function lockParentMode() {
+  state.parentUnlocked = false;
+  stopLobbyPreview();
+  switchView('kidhome');
+  showToast('부모 관리 모드를 잠그고 아이 수업 화면으로 돌아왔습니다.');
+}
 
 // ==================== SHARED TEXTBOOK PAGE RENDERER ====================
 function renderBookPageMarkup(page, { interactive = false } = {}) {
@@ -655,11 +844,11 @@ function renderBookPageMarkup(page, { interactive = false } = {}) {
   return sections.join('');
 }
 
-// ==================== LOBBY RENDERING ====================
+// ==================== PARENT EDUCATION & SYSTEM TABS ====================
 function renderStudentPresets() {
   el.studentPresetGrid.innerHTML = STUDENT_PRESETS.map((preset) => {
     const active = state.activeStudentId === preset.id;
-    const savedProfile = state.profiles[preset.id];
+    const savedProfile = getProfile(preset.id);
     const levelShort = LEVELS[savedProfile.levelKey]?.shortLabel || '';
     return `
       <button type="button" class="student-preset-btn ${active ? 'active' : ''}" data-student-id="${preset.id}" role="radio" aria-checked="${active}">
@@ -670,19 +859,16 @@ function renderStudentPresets() {
     `;
   }).join('');
 
-  el.studentNameInput.value = getActiveProfile().name || '';
+  el.studentNameInput.value = getProfile().name || '';
 
   el.studentPresetGrid.querySelectorAll('.student-preset-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       syncCurrentProfileFields();
       state.activeStudentId = btn.dataset.studentId;
       applyActiveProfileToState();
-      if (state.bookMode === 'library' && (state.bookFilter === 'grade3' || state.bookFilter === 'grade6')) {
-        state.bookFilter = state.activeStudentId;
-      }
       saveSettings();
-      renderAllLobby();
-      showToast(`${getStudentDisplayName()} 프로필 설정을 불러왔어요.`);
+      renderParentEducationTab();
+      showToast(`${getStudentDisplayName()} 교육 세팅을 불러왔어요.`);
     });
   });
 }
@@ -753,7 +939,7 @@ function renderTextbooks() {
     el.textbookGrid.querySelectorAll('[data-preview-book]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        openBookPreviewModal(btn.dataset.previewBook);
+        openBookPreviewModal(btn.dataset.previewBook, { readOnly: false });
       });
     });
   }
@@ -781,7 +967,7 @@ function renderTutors() {
   }).join('');
 
   const cur = getSelectedTutor();
-  el.selectedTutorSummary.textContent = `${cur.name} · ${cur.origin} (Voice: ${cur.voiceName})`;
+  el.selectedTutorSummary.textContent = `${cur.name} · ${cur.origin} (${cur.voiceName})`;
 
   el.tutorGrid.querySelectorAll('.tutor-card').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -792,7 +978,27 @@ function renderTutors() {
   });
 }
 
-function syncLobbyControlsFromState() {
+function renderParentEducationTab() {
+  renderStudentPresets();
+  el.levelPills.querySelectorAll('.level-card').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.level === state.levelKey);
+  });
+  el.correctionCards.querySelectorAll('.choice-card').forEach((card) => {
+    card.classList.toggle('active', card.dataset.correction === state.correctionKey);
+  });
+  el.avatarModePills.querySelectorAll('.seg-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.avatarMode === state.avatarMode);
+  });
+  el.customBookTitleInput.value = state.customBookTitle;
+  el.customBookContentInput.value = state.customBookContent;
+  el.customTopicInput.value = state.customTopic;
+
+  renderTextbooks();
+  renderTutors();
+  updateBadges();
+}
+
+function syncParentSystemControls() {
   el.shareCamCheckbox.checked = state.shareCamera;
   el.enableToolsCheckbox.checked = state.enableTools;
   el.liveModelSelect.value = state.liveModel;
@@ -800,28 +1006,14 @@ function syncLobbyControlsFromState() {
   el.customLiveModelInput.classList.toggle('hidden', state.liveModel !== 'custom');
   el.reportModelSelect.value = state.reportModel;
   el.videoIntervalSelect.value = String(state.videoIntervalMs);
-  el.customBookTitleInput.value = state.customBookTitle;
-  el.customBookContentInput.value = state.customBookContent;
 
-  el.avatarModePills.querySelectorAll('.seg-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.avatarMode === state.avatarMode);
+  el.noiseGateCards.querySelectorAll('.choice-card').forEach((c) => {
+    c.classList.toggle('active', c.dataset.noise === state.noiseSensitivity);
   });
-
-  el.levelPills.querySelectorAll('.level-card').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.level === state.levelKey);
+  el.speechModePills.querySelectorAll('.seg-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.speechMode === state.speechMode);
   });
-
-  el.correctionCards.querySelectorAll('.choice-card').forEach((card) => {
-    card.classList.toggle('active', card.dataset.correction === state.correctionKey);
-  });
-}
-
-function renderAllLobby() {
-  renderStudentPresets();
-  syncLobbyControlsFromState();
-  renderTextbooks();
-  renderTutors();
-  updateBadges();
+  el.pinStatusHint.textContent = getParentPin() === '0000' ? '현재 기본값: 0000 (변경을 권장해요)' : '사용자 비밀번호 설정됨';
 }
 
 // ==================== TEXTBOOK PREVIEW MODAL ====================
@@ -838,11 +1030,13 @@ function renderBookPreviewPage() {
   el.previewPageCounter.textContent = `${state.previewPageIdx + 1} / ${book.pages.length}`;
   el.previewPrevPageBtn.disabled = state.previewPageIdx <= 0;
   el.previewNextPageBtn.disabled = state.previewPageIdx >= book.pages.length - 1;
+  el.selectPreviewBookBtn.classList.toggle('hidden', state.previewReadOnly);
 }
 
-function openBookPreviewModal(bookId) {
+function openBookPreviewModal(bookId, { readOnly = false } = {}) {
   state.previewBookId = bookId;
   state.previewPageIdx = 0;
+  state.previewReadOnly = readOnly;
   renderBookPreviewPage();
   el.bookPreviewModal.classList.remove('hidden');
 }
@@ -882,9 +1076,9 @@ function renderActiveCallBookPage({ notifyTutor = false } = {}) {
       const word = btn.dataset.askWord;
       if (!state.inCall || !word) return;
       state.liveClient?.sendTextTurn(
-        `I clicked the word "${word}" in our textbook! Could you pronounce it clearly and give me a fun short example?`
+        `I clicked the word "${word}" in our textbook! Could you pronounce it clearly and ask me to make a short sentence with it?`
       );
-      showToast(`"${word}" 단어 발음·설명을 선생님께 요청했어요!`);
+      showToast(`"${word}" 단어 발음·연습을 선생님께 요청했어요!`);
     });
   });
 
@@ -910,7 +1104,7 @@ function renderActiveCallBookPage({ notifyTutor = false } = {}) {
 
   if (notifyTutor && state.inCall) {
     state.liveClient?.sendTextTurn(
-      `[Lesson Page Sync] I turned our textbook to Page ${idx + 1} (${page.step}: "${page.heading}"). Let's do this page together now!`
+      `[Lesson Page Sync] I turned our textbook to Page ${idx + 1} (${page.step}: "${page.heading}"). Let's practice this page now!`
     );
     showToast(`교재 ${idx + 1}쪽으로 이동했어요 — AI 선생님 화면과 동기화됨`);
   }
@@ -919,20 +1113,18 @@ function renderActiveCallBookPage({ notifyTutor = false } = {}) {
 let starBannerTimer = null;
 function triggerGoldStar(reason) {
   state.sessionStarsEarned += 1;
-  getActiveProfile().stars = (getActiveProfile().stars || 0) + 1;
+  getProfile().stars = (getProfile().stars || 0) + 1;
   saveSettings();
 
   el.callStarCount.textContent = String(state.sessionStarsEarned);
-  el.starCelebrateReason.textContent = reason || '멋진 영어 문장이었어요!';
+  el.starCelebrateReason.textContent = reason || '완전한 문장으로 정말 잘했어요!';
   el.starCelebrateBanner.classList.remove('hidden');
   playRewardChime('star');
   state.avatar3d?.setMood('happy');
   state.avatar3d?.playGesture('thumbup', 2.8);
 
   clearTimeout(starBannerTimer);
-  starBannerTimer = setTimeout(() => {
-    el.starCelebrateBanner.classList.add('hidden');
-  }, 4200);
+  starBannerTimer = setTimeout(() => el.starCelebrateBanner.classList.add('hidden'), 4200);
 }
 
 function showChalkboardNote(englishSentence, koreanTip) {
@@ -991,9 +1183,7 @@ async function handleGeminiToolCall(fnCall) {
 
   if (name === 'turn_textbook_page') {
     const book = state.activeCallTextbook;
-    if (!book || !book.pages?.length) {
-      return { ok: false, message: 'No textbook active.' };
-    }
+    if (!book || !book.pages?.length) return { ok: false, message: 'No textbook active.' };
     const targetIdx = Math.max(0, Math.min(book.pages.length - 1, Number(args.pageNumber || 1) - 1));
     state.activeCallPageIdx = targetIdx;
     setSidebarTab('book');
@@ -1026,7 +1216,7 @@ async function handleGeminiToolCall(fnCall) {
   return { ok: true };
 }
 
-// ==================== LOBBY DEVICE PREVIEW ====================
+// ==================== DEVICE PREVIEW (IN PARENT SYSTEM TAB) ====================
 async function stopLobbyPreview() {
   if (state.lobbyMicRaf) {
     cancelAnimationFrame(state.lobbyMicRaf);
@@ -1052,7 +1242,6 @@ async function toggleLobbyPreview() {
     await stopLobbyPreview();
     return;
   }
-  showLobbyError('');
   try {
     let stream;
     try {
@@ -1074,9 +1263,8 @@ async function toggleLobbyPreview() {
       el.lobbyVideoFallback.classList.add('hidden');
       el.previewDeviceStatus.textContent = '카메라 · 마이크 정상';
     } else {
-      el.previewDeviceStatus.textContent = '마이크만 연결됨 (카메라 없음)';
+      el.previewDeviceStatus.textContent = '마이크만 연결됨';
     }
-
     el.toggleLobbyCamBtn.querySelector('span').textContent = '미리보기 끄기';
 
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -1101,7 +1289,7 @@ async function toggleLobbyPreview() {
     };
     tick();
   } catch (err) {
-    showLobbyError(`마이크/카메라 접근에 실패했습니다: ${err.message}`);
+    showToast(`마이크/카메라 접근 실패: ${err.message}`, 3600);
   }
 }
 
@@ -1180,7 +1368,6 @@ function startWaveformLoop() {
   const draw = () => {
     if (!state.inCall) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
     const levels = state.audioPlayer
       ? state.audioPlayer.getVisualizerLevels(barCount)
       : new Array(barCount).fill(0);
@@ -1201,7 +1388,6 @@ function startWaveformLoop() {
       ctx.roundRect(x, y, barW, barH, 4);
       ctx.fill();
     }
-
     state.waveRafId = requestAnimationFrame(draw);
   };
   draw();
@@ -1215,11 +1401,29 @@ function updateMicUI() {
   if (state.micMuted) el.callMicRing.style.opacity = '0';
 }
 
+function updatePttUI() {
+  el.pttHoldBtn.classList.toggle('hidden', !state.callPttMode);
+  el.pttHoldBtn.classList.toggle('holding', state.pttPressed);
+  el.togglePttModeLabel.textContent = state.callPttMode ? '눌러말하기 중' : '자동 감지';
+  if (state.callPttMode) {
+    el.callNoiseGateBadge.textContent = state.pttPressed ? '🎤 말하는 중!' : '눌러서 말하기 (Space)';
+    el.callNoiseGateBadge.classList.toggle('active-voice', state.pttPressed);
+  }
+}
+
+function setPttPressed(pressed) {
+  if (!state.inCall || !state.callPttMode || state.micMuted) return;
+  if (state.pttPressed === pressed) return;
+  state.pttPressed = pressed;
+  state.captureWorkletNode?.port.postMessage({ pttPressed: pressed });
+  updatePttUI();
+}
+
 function updateCamUI() {
   el.camToggleBtn.classList.toggle('is-off', !state.camEnabled);
   el.camOnIcon.classList.toggle('hidden', !state.camEnabled);
   el.camOffIcon.classList.toggle('hidden', state.camEnabled);
-  el.camToggleLabel.textContent = state.camEnabled ? '카메라 켜짐' : '카메라 꺼짐';
+  el.camToggleLabel.textContent = state.camEnabled ? '카메라' : '카메라 꺼짐';
   el.callUserCamOff.classList.toggle('hidden', state.camEnabled);
   el.visionSharingBadge.classList.toggle('hidden', !state.camEnabled || state.videoIntervalMs === 0);
 }
@@ -1228,7 +1432,7 @@ function updateAvatarLayerUI() {
   const show3d = state.using3dInCall && state.avatar3d?.ready;
   el.callAvatar3dMount.classList.toggle('hidden', !show3d);
   el.callTutorImg.classList.toggle('hidden', show3d);
-  el.toggleAvatarViewLabel.textContent = show3d ? '3D 립싱크 중' : '실사 화면 중';
+  el.toggleAvatarViewLabel.textContent = show3d ? '3D 립싱크' : '실사 화면';
 }
 
 function applySubtitleMode() {
@@ -1238,20 +1442,13 @@ function applySubtitleMode() {
 }
 
 async function startCall() {
-  showLobbyError('');
+  showKidError('');
   const apiKey = el.apiKeyInput.value.trim();
   if (!apiKey) {
-    showLobbyError('먼저 Google Gemini API 키를 입력해 주세요. (Google AI Studio에서 발급 가능)');
-    el.apiKeyInput.focus();
-    return;
-  }
-  if (state.bookMode === 'custom' && !state.customBookContent.trim()) {
-    showLobbyError('"내 교재 붙여넣기" 탭을 선택하셨어요. 수업할 영어 지문을 입력하거나 기본 교재를 선택해 주세요.');
-    el.customBookContentInput.focus();
+    showKidError('아직 Gemini API 키가 등록되지 않았어요. 오른쪽 위 [🔒 부모 관리]에서 API 키를 입력해 주세요.');
     return;
   }
 
-  localStorage.setItem(STORAGE_KEYS.API_KEY, apiKey);
   saveSettings();
   await stopLobbyPreview();
 
@@ -1261,8 +1458,8 @@ async function startCall() {
   const liveModel = getActiveLiveModel();
   const topicLabel = getLessonTitleLabel();
 
-  el.startCallBtn.disabled = true;
-  el.startCallBtn.querySelector('span').textContent = '교실 연결 중...';
+  el.kidStartCallBtn.disabled = true;
+  el.kidStartCallBtn.querySelector('span').textContent = '선생님 교실 연결 중...';
 
   try {
     let stream;
@@ -1289,13 +1486,14 @@ async function startCall() {
     state.callStream = stream;
     state.camEnabled = stream.getVideoTracks().length > 0;
     state.micMuted = false;
+    state.callPttMode = state.speechMode === 'ptt';
+    state.pttPressed = false;
     state.studentSpeakingMs = 0;
     state.sessionStarsEarned = 0;
     state.sessionWhiteboardNotes = [];
     state.activeCallTextbook = textbook;
     state.activeCallPageIdx = 0;
 
-    // Show call view early so 3D WebGL canvas gets real dimensions!
     switchView('call');
     el.callTutorImg.src = tutor.avatar;
     el.callTutorImg.alt = `${tutor.name} 선생님`;
@@ -1329,10 +1527,11 @@ async function startCall() {
 
     el.callUserVideo.srcObject = state.camEnabled ? stream : null;
     updateMicUI();
+    updatePttUI();
     updateCamUI();
     applySubtitleMode();
 
-    // Optional 3D Real-Time Lip-Sync Avatar initialization
+    // 3D Lip-Sync Avatar
     let externalAudioTarget = null;
     state.using3dInCall = false;
     if (state.avatarMode === '3d') {
@@ -1354,16 +1553,17 @@ async function startCall() {
     }
     updateAvatarLayerUI();
 
-    // Init PCM Audio Player (routes into TalkingHead audio graph if 3D mode is active!)
+    // PCM Audio Player with Echo Guard feedback to worklet
     state.audioPlayer = new PcmAudioPlayer((isSpeaking) => {
       el.tutorStageCard.classList.toggle('speaking', isSpeaking);
+      state.captureWorkletNode?.port.postMessage({ tutorSpeaking: isSpeaking });
       if (state.inCall) {
         el.callTutorState.textContent = isSpeaking ? '말하는 중...' : '듣고 있어요';
       }
     });
     await state.audioPlayer.init(externalAudioTarget);
 
-    // Connect Gemini Live WebSocket with Native Classroom Tools
+    // Connect Gemini Live WebSocket
     const systemInstruction = buildSystemInstruction({
       tutor,
       studentName,
@@ -1399,9 +1599,10 @@ async function startCall() {
       voiceName: tutor.voiceName,
       systemInstruction,
       tools: state.enableTools ? buildClassroomToolDeclarations() : [],
+      strictNoiseGuard: state.noiseSensitivity === 'high',
     });
 
-    // Setup 16kHz PCM Mic AudioWorklet
+    // Smart Noise-Gate AudioWorklet
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     state.captureAudioCtx = new AudioCtx();
     await state.captureAudioCtx.audioWorklet.addModule('./js/audio-worklet.js');
@@ -1410,18 +1611,45 @@ async function startCall() {
     const workletNode = new AudioWorkletNode(state.captureAudioCtx, 'pcm16k-capture-processor');
     state.captureWorkletNode = workletNode;
 
+    workletNode.port.postMessage({
+      sensitivity: state.noiseSensitivity,
+      pttMode: state.callPttMode,
+      pttPressed: false,
+      tutorSpeaking: false,
+    });
+
     workletNode.port.onmessage = (event) => {
       const msg = event.data;
       if (!msg) return;
+
+      if (msg.type === 'speechEnd') {
+        state.liveClient?.sendAudioStreamEnd();
+        if (!state.callPttMode) {
+          el.callNoiseGateBadge.textContent = NOISE_LABELS[state.noiseSensitivity] || '잡음 차단 대기';
+          el.callNoiseGateBadge.classList.remove('active-voice');
+        }
+        return;
+      }
+
       if (typeof msg.rms === 'number') {
         const level = Math.min(1, msg.rms * 6.5);
-        el.callMicRing.style.opacity = state.micMuted || level < 0.05 ? '0' : String(Math.min(0.95, level));
+        const showRing = !state.micMuted && Boolean(msg.gateOpen) && level > 0.05;
+        el.callMicRing.style.opacity = showRing ? String(Math.min(0.95, level)) : '0';
         el.callMicRing.style.transform = `scale(${0.85 + level * 0.45})`;
-        if (!state.micMuted && msg.rms > 0.018 && msg.type === 'pcm') {
-          state.studentSpeakingMs += 100; // 100ms chunk of active student speech
+
+        if (!state.callPttMode) {
+          if (msg.gateOpen) {
+            el.callNoiseGateBadge.textContent = '🎤 말소리 감지 중';
+            el.callNoiseGateBadge.classList.add('active-voice');
+          } else {
+            el.callNoiseGateBadge.textContent = NOISE_LABELS[state.noiseSensitivity] || '잡음 차단 대기';
+            el.callNoiseGateBadge.classList.remove('active-voice');
+          }
         }
       }
+
       if (msg.type === 'pcm' && msg.buffer && !state.micMuted) {
+        state.studentSpeakingMs += 100;
         state.liveClient?.sendAudioPcmBuffer(msg.buffer);
       }
     };
@@ -1459,22 +1687,23 @@ async function startCall() {
       state.avatar3d?.playGesture('handup', 2.0);
 
       const openingCue = textbook
-        ? `Hi ${tutor.name}! My name is ${studentName}. I have our textbook "${textbook.title}" open to Page 1 on my screen. Please greet me warmly and kick off Page 1 with me!`
-        : `Hi ${tutor.name}! My name is ${studentName}. Let's start our fun English free-talk call!`;
+        ? `Hi ${tutor.name}! My name is ${studentName}. I have "${textbook.title}" open to Page 1. Greet me warmly in 1-2 short sentences and ask ONE easy opening question from Page 1!`
+        : `Hi ${tutor.name}! My name is ${studentName}. Greet me warmly in 1-2 short sentences and ask ONE fun question to get me speaking English!`;
       state.liveClient?.sendTextTurn(openingCue);
     }, 450);
   } catch (err) {
     await teardownCallResources();
-    switchView('lobby');
-    showLobbyError(err.message || '화상 통화 연결 중 오류가 발생했습니다.');
+    switchView('kidhome');
+    showKidError(err.message || '화상 통화 연결 중 오류가 발생했습니다.');
   } finally {
-    el.startCallBtn.disabled = false;
-    el.startCallBtn.querySelector('span').textContent = '화상영어 수업 시작하기';
+    el.kidStartCallBtn.disabled = false;
+    el.kidStartCallBtn.querySelector('span').textContent = '오늘의 화상영어 시작하기';
   }
 }
 
 async function teardownCallResources() {
   state.inCall = false;
+  state.pttPressed = false;
   if (state.videoTimerId) clearInterval(state.videoTimerId);
   if (state.callTimerId) clearInterval(state.callTimerId);
   if (state.waveRafId) cancelAnimationFrame(state.waveRafId);
@@ -1538,8 +1767,8 @@ async function endCall() {
   await teardownCallResources();
 
   if (cleanTranscript.length < 2) {
-    switchView('lobby');
-    showToast('대화 내용이 짧아 리포트를 생략하고 교실로 돌아왔습니다.');
+    switchView('kidhome');
+    showToast('대화 내용이 짧아 리포트를 생략하고 홈으로 돌아왔습니다.');
     return;
   }
 
@@ -1569,11 +1798,10 @@ async function endCall() {
       scores: { fluency: 80, naturalness: 78, vocabulary: 76, engagement: 86 },
       corrections: [],
       vocabulary: [],
-      nextTopic: '같은 교재의 핵심 표현을 FSRS 단어장에서 3분만 복습해 보세요.',
+      nextTopic: '같은 교재의 핵심 표현을 3분 복습장에서 한 번 더 따라 말해 보세요.',
     };
   }
 
-  // Automatically ingest lesson corrections, vocabulary & chalkboard notes into FSRS Review Deck!
   const addedCards = ingestLessonIntoFsrsDeck({
     studentId: state.activeStudentId,
     topicLabel,
@@ -1606,7 +1834,7 @@ async function endCall() {
   saveHistory(history);
 
   if (addedCards > 0) {
-    showToast(`오늘 배운 표현 ${addedCards}개가 FSRS 복습 단어장에 자동 등록되었어요!`, 3600);
+    showToast(`오늘 배운 표현 ${addedCards}개가 FSRS 복습장에 자동 저장되었어요!`, 3600);
   }
   renderReportView(sessionRecord);
 }
@@ -1619,6 +1847,21 @@ function handleToggleMic() {
     t.enabled = !state.micMuted;
   });
   updateMicUI();
+}
+
+function handleTogglePttMode() {
+  state.callPttMode = !state.callPttMode;
+  state.pttPressed = false;
+  state.captureWorkletNode?.port.postMessage({
+    pttMode: state.callPttMode,
+    pttPressed: false,
+  });
+  updatePttUI();
+  showToast(
+    state.callPttMode
+      ? '눌러서 말하기 모드! 스페이스바나 버튼을 누른 채로 영어로 말해 보세요.'
+      : '스마트 자동 음성 감지 모드로 전환했어요.'
+  );
 }
 
 async function handleToggleCam() {
@@ -1651,7 +1894,7 @@ async function handleToggleCam() {
 
 function handleToggleAvatarViewInCall() {
   if (!state.avatar3d?.ready) {
-    showToast('3D 아바타를 사용하려면 수업 시작 전 [3D 실시간 립싱크] 모드를 선택해 주세요.');
+    showToast('3D 아바타는 부모 관리 → 교육 세팅에서 [3D 실시간 립싱크]로 켜두면 적용됩니다.');
     return;
   }
   state.using3dInCall = !state.using3dInCall;
@@ -1755,7 +1998,7 @@ async function handleTranslateLast() {
   }
 }
 
-// ==================== REPORT & HISTORY RENDERING ====================
+// ==================== REPORT & HISTORY ====================
 function renderReportView(session) {
   state.currentReportSession = session;
   switchView('report');
@@ -1860,39 +2103,31 @@ function openSampleReport() {
         levelLabel: 'Level 3 · 초6 고급 (B1)',
         durationSec: 725,
         durationLabel: '12:05',
-        studentTalkPct: 58,
+        studentTalkPct: 62,
         starsEarned: 4,
         transcript: [
-          { role: 'tutor', text: 'So in 2050, would you prefer an AI robot teacher or a human teacher?' },
-          { role: 'user', text: 'In my opinion, AI teacher is good for math, because it can explain many times. But human teacher is more better for talking with friends and feelings.' },
-          { role: 'tutor', text: 'That is a really thoughtful balance! Why do you think empathy matters so much in a classroom?' },
-          { role: 'user', text: 'When I have hard time in school, robot cannot really feel my heart, so human teacher can cheer me up.' },
+          { role: 'tutor', text: 'In 2050, would you prefer an AI robot teacher or a human teacher?' },
+          { role: 'user', text: 'Human teacher.' },
+          { role: 'tutor', text: "Nice choice! Let's make a full sentence—tell me ONE reason starting with 'I prefer human teachers because...'" },
+          { role: 'user', text: 'I prefer human teachers because when I have hard time, human teacher can cheer me up.' },
         ],
         report: {
           praiseBadge: '논리적인 미래학교 토론왕',
-          headline: '자신의 입장과 이유를 영어 문장으로 또렷하게 설명한 훌륭한 토론 수업이었어요!',
+          headline: '단답에서 완전한 이유 문장으로 스스로 확장해 말한 훌륭한 수업이었어요!',
           summary:
-            '지문 내용을 빠르게 이해하고 AI 선생님과 인간 선생님의 장단점을 균형 있게 비교한 점이 뛰어납니다. 질문에 단답으로 끝내지 않고 because로 이유를 붙이는 습관이 잘 잡혀 있어요. 비교급 형태(much better)와 관사(a tough time)만 다듬으면 중등 심화 수준으로 금방 올라설 거예요.',
+            '선생님의 질문에 자신의 입장을 분명히 밝히고, 유도 질문에 맞춰 because를 붙여 완전한 문장으로 확장해 말한 점이 아주 뛰어납니다. 관사(a hard time)와 복수형(human teachers)만 조금 더 신경 쓰면 훨씬 자연스러워질 거예요.',
           scores: { fluency: 85, naturalness: 80, vocabulary: 82, engagement: 92 },
           corrections: [
             {
-              category: '문법',
-              original: 'But human teacher is more better for talking with friends and feelings.',
-              improved: 'But human teachers are much better at understanding feelings and guiding teamwork.',
-              explanation: "'better'를 강조할 때는 'more better' 대신 'much better'를 써요! '~을 잘하다'는 'better at ~ing'가 자연스럽습니다.",
-            },
-            {
               category: '자연스러운 표현',
-              original: 'When I have hard time in school, robot cannot really feel my heart.',
-              improved: "When I'm having a tough time at school, a robot can't truly understand how I feel.",
-              explanation: "'힘든 시간을 보내다'는 관사를 넣어 'have a tough time'이라고 말하면 원어민 또래처럼 들려요.",
+              original: 'when I have hard time, human teacher can cheer me up.',
+              improved: "when I'm having a tough time, a human teacher can cheer me up.",
+              explanation: "'힘든 시간을 보내다'는 관사 'a'를 넣어 'have a tough time'으로 말하면 원어민 또래처럼 자연스러워요.",
             },
           ],
           vocabulary: [
-            { phrase: 'much better at ~ing', meaning: '~하는 것을 훨씬 더 잘하는', example: 'Human teachers are much better at encouraging students.' },
-            { phrase: 'have a tough time', meaning: '힘든 시간을 보내다', example: 'My friend cheered me up when I was having a tough time.' },
-            { phrase: 'empathy', meaning: '공감 능력', example: 'Real empathy is something robots still struggle with.' },
-            { phrase: 'cheer someone up', meaning: '~의 기운을 북돋아 주다', example: 'A kind word from a teacher can really cheer you up.' },
+            { phrase: 'have a tough time', meaning: '힘든 시간을 보내다', example: 'My friend helped me when I was having a tough time.' },
+            { phrase: 'cheer someone up', meaning: '~의 기운을 북돋아 주다', example: 'A kind word from a teacher can cheer you up.' },
           ],
           nextTopic: '다음 수업에서는 [Should Kids Have Smartphones?] 교재로 3라운드 영어 찬반 토론에 도전해 보세요!',
         },
@@ -1908,20 +2143,20 @@ function openSampleReport() {
         levelLabel: 'Level 1 · 초3 중급 (A1+~A2)',
         durationSec: 540,
         durationLabel: '09:00',
-        studentTalkPct: 54,
+        studentTalkPct: 58,
         starsEarned: 3,
         transcript: [
-          { role: 'tutor', text: 'Look at Page 1! What is the cute little penguin wearing on his head?' },
+          { role: 'tutor', text: 'Look at Page 1! What is the cute little penguin wearing?' },
+          { role: 'user', text: 'Goggles!' },
+          { role: 'tutor', text: "Awesome! Let's say a full sentence: 'He is wearing brown goggles!' Your turn!" },
           { role: 'user', text: 'He is wearing brown goggles! I think he want to fly in the sky.' },
-          { role: 'tutor', text: 'Awesome! If you had a magic pet, what superpower would it have?' },
-          { role: 'user', text: 'My magic pet is small dragon. It can flying very fast and make ice cream!' },
         ],
         report: {
-          praiseBadge: '상상력 가득 스토리텔러',
-          headline: '그림을 보고 자신감 있게 영어로 대답하고 멋진 마법 동물까지 소개했어요!',
+          praiseBadge: '완전한 문장 챌린지 성공',
+          headline: '단답에서 완전한 영어 문장으로 씩씩하게 따라 말한 멋진 수업이었어요!',
           summary:
-            '선생님의 질문을 정확히 알아듣고 씩씩하게 자기 생각을 영어로 표현한 점이 정말 멋졌습니다! 특히 아이스크림을 만드는 마법 드래곤 아이디어가 너무 창의적이었어요. 조동사 can 뒤에 동사원형(can fly)을 쓰는 패턴만 한 번 더 연습하면 문장이 훨씬 깔끔해질 거예요.',
-          scores: { fluency: 81, naturalness: 77, vocabulary: 78, engagement: 94 },
+            '그림 속 펭귄의 고글을 바로 찾아내고, 선생님의 안내에 맞춰 완전한 영어 문장으로 자신감 있게 말한 점이 정말 훌륭합니다! 주어 he 뒤에 동사원형 대신 wants를 쓰는 패턴만 한 번 더 연습해 보세요.',
+          scores: { fluency: 81, naturalness: 78, vocabulary: 79, engagement: 94 },
           corrections: [
             {
               category: '문법',
@@ -1929,20 +2164,12 @@ function openSampleReport() {
               improved: 'I think he wants to fly in the sky.',
               explanation: "주어가 'he(그)'일 때는 현재형 동사 뒤에 '-s'를 붙여 'he wants'라고 말해요!",
             },
-            {
-              category: '문법',
-              original: 'It can flying very fast and make ice cream!',
-              improved: 'It can fly super fast and make ice cream!',
-              explanation: "'can(~할 수 있다)' 다음에는 '-ing'를 빼고 원래 모양인 'can fly'로 써야 해요.",
-            },
           ],
           vocabulary: [
             { phrase: 'aviator goggles', meaning: '비행 고글 안경', example: 'Pip wears cool brown goggles.' },
-            { phrase: 'super fast', meaning: '엄청 빠르게', example: 'My magic dragon can fly super fast!' },
             { phrase: 'curious', meaning: '호기심이 많은', example: 'The curious penguin looked at the balloons.' },
-            { phrase: 'float up', meaning: '위로 둥둥 떠오르다', example: 'The red balloons floated up into the clouds.' },
           ],
-          nextTopic: "다음 수업에서는 [Let's Order at Sunny Cafe!] 교재로 영어로 스무디와 크루아상을 직접 주문하는 역할극을 해보세요!",
+          nextTopic: "다음 수업에서는 [Let's Order at Sunny Cafe!] 교재로 영어로 스무디와 크루아상을 직접 주문해 보세요!",
         },
       };
   renderReportView(sample);
@@ -2024,7 +2251,7 @@ function openHistoryModal() {
 // ==================== EVENT WIRING ====================
 function bindEvents() {
   el.brandHomeBtn.addEventListener('click', () => {
-    if (!state.inCall) switchView('lobby');
+    if (!state.inCall) switchView('kidhome');
   });
 
   document.querySelectorAll('[data-nav]').forEach((btn) => {
@@ -2033,63 +2260,58 @@ function bindEvents() {
     });
   });
 
+  // Kid Home actions
+  el.kidStartCallBtn.addEventListener('click', startCall);
+  el.kidNoticeOpenParentBtn.addEventListener('click', openPinModal);
+  el.kidGoReviewBtn.addEventListener('click', () => switchView('review'));
+  el.kidPreviewBookBtn.addEventListener('click', () => {
+    const book = getSelectedTextbookObj();
+    if (book && book.id !== 'custom-book') {
+      openBookPreviewModal(book.id, { readOnly: true });
+    }
+  });
+
+  // Parent Gate & PIN Modal
+  el.openParentGateBtn.addEventListener('click', openPinModal);
+  el.lockParentBtn.addEventListener('click', lockParentMode);
+  el.closePinModalBtn.addEventListener('click', () => el.pinModal.classList.add('hidden'));
+  el.pinModal.addEventListener('click', (e) => {
+    if (e.target === el.pinModal) el.pinModal.classList.add('hidden');
+  });
+  el.pinUnlockForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const entered = el.pinUnlockInput.value.trim();
+    if (entered === getParentPin()) {
+      state.parentUnlocked = true;
+      el.pinModal.classList.add('hidden');
+      switchView('parent');
+      showToast('부모 관리 모드가 열렸습니다.');
+    } else {
+      el.pinErrorMsg.textContent = '비밀번호가 일치하지 않습니다. 다시 입력해 주세요.';
+      el.pinErrorMsg.classList.remove('hidden');
+      el.pinUnlockInput.select();
+    }
+  });
+
+  // Parent Tabs
+  document.querySelectorAll('[data-parent-tab]').forEach((tab) => {
+    tab.addEventListener('click', () => setParentTab(tab.dataset.parentTab));
+  });
+
+  // Parent Education Settings
   el.quickLevelTestBtn.addEventListener('click', () => switchView('leveltest'));
 
   el.studentNameInput.addEventListener('input', () => {
-    getActiveProfile().name = el.studentNameInput.value;
+    getProfile().name = el.studentNameInput.value;
     saveSettings();
     renderStudentPresets();
-  });
-
-  el.toggleLobbyCamBtn.addEventListener('click', toggleLobbyPreview);
-  el.shareCamCheckbox.addEventListener('change', () => {
-    state.shareCamera = el.shareCamCheckbox.checked;
-    saveSettings();
-  });
-  el.enableToolsCheckbox.addEventListener('change', () => {
-    state.enableTools = el.enableToolsCheckbox.checked;
-    saveSettings();
-  });
-
-  el.apiKeyInput.addEventListener('change', () => {
-    localStorage.setItem(STORAGE_KEYS.API_KEY, el.apiKeyInput.value.trim());
-  });
-  el.toggleApiKeyVisBtn.addEventListener('click', () => {
-    el.apiKeyInput.type = el.apiKeyInput.type === 'password' ? 'text' : 'password';
-  });
-
-  el.avatarModePills.querySelectorAll('.seg-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      state.avatarMode = btn.dataset.avatarMode;
-      saveSettings();
-      syncLobbyControlsFromState();
-    });
-  });
-
-  el.liveModelSelect.addEventListener('change', () => {
-    state.liveModel = el.liveModelSelect.value;
-    el.customLiveModelInput.classList.toggle('hidden', state.liveModel !== 'custom');
-    saveSettings();
-  });
-  el.customLiveModelInput.addEventListener('input', () => {
-    state.customLiveModel = el.customLiveModelInput.value;
-    saveSettings();
-  });
-  el.reportModelSelect.addEventListener('change', () => {
-    state.reportModel = el.reportModelSelect.value;
-    saveSettings();
-  });
-  el.videoIntervalSelect.addEventListener('change', () => {
-    state.videoIntervalMs = Number(el.videoIntervalSelect.value);
-    saveSettings();
   });
 
   el.levelPills.querySelectorAll('.level-card').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.levelKey = btn.dataset.level;
       saveSettings();
-      syncLobbyControlsFromState();
-      renderStudentPresets();
+      renderParentEducationTab();
     });
   });
 
@@ -2097,7 +2319,15 @@ function bindEvents() {
     card.addEventListener('click', () => {
       state.correctionKey = card.dataset.correction;
       saveSettings();
-      syncLobbyControlsFromState();
+      renderParentEducationTab();
+    });
+  });
+
+  el.avatarModePills.querySelectorAll('.seg-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.avatarMode = btn.dataset.avatarMode;
+      saveSettings();
+      renderParentEducationTab();
     });
   });
 
@@ -2125,10 +2355,83 @@ function bindEvents() {
   });
   el.customTopicInput.addEventListener('input', () => {
     state.customTopic = el.customTopicInput.value;
+    saveSettings();
     el.selectedBookSummary.textContent = getLessonTitleLabel();
   });
 
-  el.startCallBtn.addEventListener('click', startCall);
+  // Parent System Settings
+  el.toggleLobbyCamBtn.addEventListener('click', toggleLobbyPreview);
+  el.shareCamCheckbox.addEventListener('change', () => {
+    state.shareCamera = el.shareCamCheckbox.checked;
+    saveSettings();
+  });
+  el.enableToolsCheckbox.addEventListener('change', () => {
+    state.enableTools = el.enableToolsCheckbox.checked;
+    saveSettings();
+  });
+
+  el.apiKeyInput.addEventListener('change', () => {
+    localStorage.setItem(STORAGE_KEYS.API_KEY, el.apiKeyInput.value.trim());
+    showToast('Gemini API 키가 이 기기에 저장되었습니다.');
+  });
+  el.toggleApiKeyVisBtn.addEventListener('click', () => {
+    el.apiKeyInput.type = el.apiKeyInput.type === 'password' ? 'text' : 'password';
+  });
+
+  el.noiseGateCards.querySelectorAll('.choice-card').forEach((card) => {
+    card.addEventListener('click', () => {
+      state.noiseSensitivity = card.dataset.noise;
+      saveSettings();
+      syncParentSystemControls();
+      showToast(`잡음 차단 강도를 [${NOISE_LABELS[state.noiseSensitivity]}]로 설정했어요.`);
+    });
+  });
+
+  el.speechModePills.querySelectorAll('.seg-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.speechMode = btn.dataset.speechMode;
+      saveSettings();
+      syncParentSystemControls();
+    });
+  });
+
+  el.liveModelSelect.addEventListener('change', () => {
+    state.liveModel = el.liveModelSelect.value;
+    el.customLiveModelInput.classList.toggle('hidden', state.liveModel !== 'custom');
+    saveSettings();
+  });
+  el.customLiveModelInput.addEventListener('input', () => {
+    state.customLiveModel = el.customLiveModelInput.value;
+    saveSettings();
+  });
+  el.reportModelSelect.addEventListener('change', () => {
+    state.reportModel = el.reportModelSelect.value;
+    saveSettings();
+  });
+  el.videoIntervalSelect.addEventListener('change', () => {
+    state.videoIntervalMs = Number(el.videoIntervalSelect.value);
+    saveSettings();
+  });
+
+  el.changePinForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const p1 = el.newPinInput.value.trim();
+    const p2 = el.confirmPinInput.value.trim();
+    if (!/^\d{4}$/.test(p1)) {
+      showToast('비밀번호는 4자리 숫자로 입력해 주세요.');
+      return;
+    }
+    if (p1 !== p2) {
+      showToast('두 비밀번호가 서로 다릅니다.');
+      return;
+    }
+    localStorage.setItem(STORAGE_KEYS.PARENT_PIN, p1);
+    el.newPinInput.value = '';
+    el.confirmPinInput.value = '';
+    syncParentSystemControls();
+    showToast('부모 관리 비밀번호가 변경되었습니다!');
+  });
+
   el.previewSampleReportBtn.addEventListener('click', openSampleReport);
 
   // Textbook preview modal
@@ -2157,16 +2460,41 @@ function bindEvents() {
       saveSettings();
       renderTextbooks();
       el.bookPreviewModal.classList.add('hidden');
-      showToast(`"${getLessonTitleLabel()}" 교재를 선택했어요!`);
+      showToast(`"${getLessonTitleLabel()}" 교재를 배정했어요!`);
     }
   });
 
-  // In-Call Controls
+  // In-Call Controls + Push-to-Talk (Mouse / Touch / Spacebar)
   el.micToggleBtn.addEventListener('click', handleToggleMic);
+  el.togglePttModeBtn.addEventListener('click', handleTogglePttMode);
   el.camToggleBtn.addEventListener('click', handleToggleCam);
   el.toggleAvatarViewBtn.addEventListener('click', handleToggleAvatarViewInCall);
   el.sendSnapshotBtn.addEventListener('click', handleManualSnapshot);
   el.endCallBtn.addEventListener('click', endCall);
+
+  el.pttHoldBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    setPttPressed(true);
+  });
+  window.addEventListener('pointerup', () => setPttPressed(false));
+  window.addEventListener('keydown', (e) => {
+    if (
+      e.code === 'Space' &&
+      state.inCall &&
+      state.callPttMode &&
+      !e.repeat &&
+      document.activeElement?.tagName !== 'INPUT' &&
+      document.activeElement?.tagName !== 'TEXTAREA'
+    ) {
+      e.preventDefault();
+      setPttPressed(true);
+    }
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space' && state.inCall && state.callPttMode) {
+      setPttPressed(false);
+    }
+  });
 
   el.closeChalkboardBtn.addEventListener('click', () => el.chalkboardBanner.classList.add('hidden'));
   el.closePopQuizBtn.addEventListener('click', () => el.popQuizCard.classList.add('hidden'));
@@ -2243,7 +2571,7 @@ function bindEvents() {
     if (b64) {
       state.liveClient?.sendVideoFrameBase64(b64);
       state.liveClient?.sendTextTurn(
-        `Look at what I just drew or circled on our classroom whiteboard for "${heading}"! Tell me what you think!`
+        `Look at what I just drew or circled on our classroom whiteboard for "${heading}"! Ask me a fun question about it!`
       );
       showToast('화이트보드 그림을 선생님께 보냈어요!');
     }
@@ -2282,7 +2610,7 @@ function bindEvents() {
     a.click();
     URL.revokeObjectURL(url);
   });
-  el.backToLobbyBtn.addEventListener('click', () => switchView('lobby'));
+  el.backToLobbyBtn.addEventListener('click', () => switchView('kidhome'));
 
   // History modal
   el.openHistoryBtn.addEventListener('click', openHistoryModal);
@@ -2298,7 +2626,7 @@ function bindEvents() {
 function init() {
   restoreSettings();
   bindEvents();
-  switchView('lobby');
+  switchView('kidhome');
 }
 
 init();

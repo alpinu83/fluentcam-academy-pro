@@ -23,8 +23,7 @@ function base64ToInt16Array(base64) {
 
 /**
  * Smooth, interruptible 24kHz PCM player with AnalyserNode.
- * Can either own its own AudioContext OR route directly into TalkingHead's
- * AudioContext + audioSpeechGainNode for zero-latency 3D real-time lip-sync!
+ * Can attach to TalkingHead's audio graph for 3D real-time lip-sync.
  */
 export class PcmAudioPlayer {
   constructor(onSpeakingChange) {
@@ -169,7 +168,7 @@ export class PcmAudioPlayer {
 
 /**
  * WebSocket client for Google Gemini Live API (BidiGenerateContent)
- * with Audio/Video streaming, Input/Output Transcription, and Native Tool Calling.
+ * with noise-resilient VAD tuning, audioStreamEnd signaling, and Native Tool Calling.
  */
 export class GeminiLiveClient {
   constructor(callbacks = {}) {
@@ -179,7 +178,7 @@ export class GeminiLiveClient {
     this.closedByUser = false;
   }
 
-  connect({ apiKey, model, voiceName, systemInstruction, tools = [] }) {
+  connect({ apiKey, model, voiceName, systemInstruction, tools = [], strictNoiseGuard = false }) {
     return new Promise((resolve, reject) => {
       this.closedByUser = false;
       this.isSetupComplete = false;
@@ -215,6 +214,18 @@ export class GeminiLiveClient {
           },
           systemInstruction: {
             parts: [{ text: systemInstruction }],
+          },
+          realtimeInputConfig: {
+            automaticActivityDetection: {
+              startOfSpeechSensitivity: 'START_SENSITIVITY_LOW',
+              endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+              prefixPaddingMs: 240,
+              silenceDurationMs: 1100,
+            },
+            activityHandling: strictNoiseGuard ? 'NO_INTERRUPTION' : 'START_OF_ACTIVITY_INTERRUPTS',
+          },
+          contextWindowCompression: {
+            slidingWindow: {},
           },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
@@ -253,7 +264,7 @@ export class GeminiLiveClient {
             return;
           }
 
-          // Handle Gemini Live Native Tool Calls
+          // Native Tool Calls
           const tc = msg.toolCall || msg.tool_call;
           if (tc) {
             const calls = tc.functionCalls || tc.function_calls || [];
@@ -353,13 +364,7 @@ export class GeminiLiveClient {
 
   sendToolResponses(functionResponses) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.ws.send(
-      JSON.stringify({
-        toolResponse: {
-          functionResponses,
-        },
-      })
-    );
+    this.ws.send(JSON.stringify({ toolResponse: { functionResponses } }));
   }
 
   sendAudioPcmBuffer(arrayBuffer) {
@@ -372,6 +377,17 @@ export class GeminiLiveClient {
             mimeType: 'audio/pcm;rate=16000',
             data: base64,
           },
+        },
+      })
+    );
+  }
+
+  sendAudioStreamEnd() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isSetupComplete) return;
+    this.ws.send(
+      JSON.stringify({
+        realtimeInput: {
+          audioStreamEnd: true,
         },
       })
     );
@@ -396,12 +412,7 @@ export class GeminiLiveClient {
     this.ws.send(
       JSON.stringify({
         clientContent: {
-          turns: [
-            {
-              role: 'user',
-              parts: [{ text }],
-            },
-          ],
+          turns: [{ role: 'user', parts: [{ text }] }],
           turnComplete: true,
         },
       })
