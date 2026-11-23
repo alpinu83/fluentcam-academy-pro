@@ -1,0 +1,10 @@
+{
+  "name": "fluentcam-ai-video-english",
+  "version": "1.0.0",
+  "description": "Personal AI Video English Tutor powered by Google Gemini Live API",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  }
+}
