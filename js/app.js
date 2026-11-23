@@ -8,6 +8,8 @@ import {
 } from './tutors.js';
 import {
   getAllTextbooks,
+  loadCustomAiTextbooks,
+  loadDeletedAiBookIds,
   saveCustomAiTextbook,
   deleteCustomAiTextbook,
 } from './textbooks.js';
@@ -22,6 +24,12 @@ import {
   generateStudyReport,
   reportToMarkdown,
 } from './feedback.js';
+import {
+  DEFAULT_SYNC_REPO,
+  createGitHubCloudSync,
+  loadGitHubSyncConfig,
+  saveGitHubSyncConfig,
+} from './cloud-sync.js';
 
 const STORAGE_KEYS = {
   API_KEY: 'fluentcam_gemini_api_key',
@@ -29,7 +37,11 @@ const STORAGE_KEYS = {
   HISTORY: 'fluentcam_history_v1',
   PARENT_PIN: 'fluentcam_parent_pin_v1',
   AI_BOOKS: 'fluentcam_ai_generated_books_v1',
+  DELETED_AI_BOOKS: 'fluentcam_deleted_ai_books_v1',
   FSRS_DECK: 'fluentcam_fsrs_deck_v1',
+  SETTINGS_UPDATED_AT: 'fluentcam_settings_updated_at_v1',
+  API_KEY_UPDATED_AT: 'fluentcam_api_key_updated_at_v1',
+  PIN_UPDATED_AT: 'fluentcam_pin_updated_at_v1',
 };
 
 const LEGACY_BOOK_ID_MAP = {
@@ -170,6 +182,8 @@ const state = {
 const el = {
   topHeader: document.getElementById('topHeader'),
   brandHomeBtn: document.getElementById('brandHomeBtn'),
+  cloudSyncBadgeBtn: document.getElementById('cloudSyncBadgeBtn'),
+  cloudSyncBadgeLabel: document.getElementById('cloudSyncBadgeLabel'),
   openHistoryBtn: document.getElementById('openHistoryBtn'),
   historyCountBadge: document.getElementById('historyCountBadge'),
   reviewDueBadge: document.getElementById('reviewDueBadge'),
@@ -226,6 +240,15 @@ const el = {
   reportModelSelect: document.getElementById('reportModelSelect'),
   videoIntervalSelect: document.getElementById('videoIntervalSelect'),
   enableToolsCheckbox: document.getElementById('enableToolsCheckbox'),
+
+  ghSyncStatusBadge: document.getElementById('ghSyncStatusBadge'),
+  ghSyncRepoInput: document.getElementById('ghSyncRepoInput'),
+  ghSyncTokenInput: document.getElementById('ghSyncTokenInput'),
+  toggleGhTokenVisBtn: document.getElementById('toggleGhTokenVisBtn'),
+  ghSyncStatusMeta: document.getElementById('ghSyncStatusMeta'),
+  ghConnectSyncBtn: document.getElementById('ghConnectSyncBtn'),
+  ghSyncNowBtn: document.getElementById('ghSyncNowBtn'),
+  ghDisconnectBtn: document.getElementById('ghDisconnectBtn'),
 
   syncIncludeKeyCheckbox: document.getElementById('syncIncludeKeyCheckbox'),
   copySyncLinkBtn: document.getElementById('copySyncLinkBtn'),
@@ -391,6 +414,7 @@ const el = {
 };
 
 const whiteboard = new ClassroomWhiteboard(el.bookWhiteboardCanvas);
+let cloudSync = null;
 
 // ==================== HELPERS ====================
 let toastTimer = null;
@@ -515,9 +539,10 @@ function loadHistory() {
   }
 }
 
-function saveHistory(items) {
-  localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(items.slice(0, 50)));
+function saveHistory(items, { skipSync = false } = {}) {
+  localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(items.slice(0, 60)));
   updateBadges();
+  if (!skipSync) cloudSync?.schedulePush();
 }
 
 function updateBadges() {
@@ -579,7 +604,7 @@ function applyActiveProfileToState() {
   state.bookFilter = state.bookMode === 'custom' ? 'custom' : state.bookMode === 'freetalk' ? 'freetalk' : 'all';
 }
 
-function saveSettings() {
+function saveSettings({ skipSync = false } = {}) {
   syncCurrentProfileFields();
   localStorage.setItem(
     STORAGE_KEYS.SETTINGS,
@@ -597,6 +622,10 @@ function saveSettings() {
       shareCamera: state.shareCamera,
     })
   );
+  if (!skipSync) {
+    localStorage.setItem(STORAGE_KEYS.SETTINGS_UPDATED_AT, String(Date.now()));
+    cloudSync?.schedulePush();
+  }
   updateBadges();
 }
 
@@ -1133,6 +1162,11 @@ function syncParentSystemControls() {
     b.classList.toggle('active', b.dataset.speechMode === state.speechMode);
   });
   el.pinStatusHint.textContent = getParentPin() === '0000' ? '현재 기본값: 0000 (변경을 권장해요)' : '사용자 비밀번호 설정됨';
+
+  const ghCfg = loadGitHubSyncConfig();
+  el.ghSyncRepoInput.value = ghCfg.repo || DEFAULT_SYNC_REPO;
+  el.ghSyncTokenInput.value = ghCfg.token || '';
+  cloudSync?.emitCurrentStatus();
 }
 
 // ==================== TEXTBOOK PREVIEW MODAL ====================
@@ -2335,7 +2369,7 @@ function bindEvents() {
   el.pinModal.addEventListener('click', (e) => {
     if (e.target === el.pinModal) el.pinModal.classList.add('hidden');
   });
-  el.pinUnlockForm.addEventListener('submit', (e) => {
+  el.pinUnlockForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const entered = el.pinUnlockInput.value.trim();
     if (entered === getParentPin()) {
@@ -2343,11 +2377,31 @@ function bindEvents() {
       el.pinModal.classList.add('hidden');
       switchView('parent');
       showToast('부모 관리 모드가 열렸습니다.');
-    } else {
-      el.pinErrorMsg.textContent = '비밀번호가 일치하지 않습니다. 다시 입력해 주세요.';
-      el.pinErrorMsg.classList.remove('hidden');
-      el.pinUnlockInput.select();
+      return;
     }
+    const cloudMatch = await cloudSync?.tryUnlockWithPin(entered);
+    if (cloudMatch?.matched) {
+      localStorage.setItem(STORAGE_KEYS.PARENT_PIN, entered);
+      if (cloudMatch.pinUpdatedAt) {
+        localStorage.setItem(STORAGE_KEYS.PIN_UPDATED_AT, String(cloudMatch.pinUpdatedAt));
+      }
+      if (cloudMatch.apiKey) {
+        localStorage.setItem(STORAGE_KEYS.API_KEY, cloudMatch.apiKey);
+        el.apiKeyInput.value = cloudMatch.apiKey;
+        if (cloudMatch.apiKeyUpdatedAt) {
+          localStorage.setItem(STORAGE_KEYS.API_KEY_UPDATED_AT, String(cloudMatch.apiKeyUpdatedAt));
+        }
+      }
+      state.parentUnlocked = true;
+      el.pinModal.classList.add('hidden');
+      switchView('parent');
+      cloudSync?.emitCurrentStatus();
+      showToast('클라우드 부모 PIN 확인 완료! 암호화된 API 키까지 자동 복원했어요.', 3800);
+      return;
+    }
+    el.pinErrorMsg.textContent = '비밀번호가 일치하지 않습니다. 다시 입력해 주세요.';
+    el.pinErrorMsg.classList.remove('hidden');
+    el.pinUnlockInput.select();
   });
 
   // Parent Tabs
@@ -2449,7 +2503,14 @@ function bindEvents() {
 
   el.apiKeyInput.addEventListener('change', () => {
     localStorage.setItem(STORAGE_KEYS.API_KEY, el.apiKeyInput.value.trim());
-    showToast('Gemini API 키가 이 기기에 저장되었습니다.');
+    localStorage.setItem(STORAGE_KEYS.API_KEY_UPDATED_AT, String(Date.now()));
+    const ghCfg = loadGitHubSyncConfig();
+    if (ghCfg.enabled) {
+      cloudSync?.schedulePush(600);
+      showToast('Gemini API 키를 저장하고 GitHub 비공개 저장소에 암호화 동기화합니다.');
+    } else {
+      showToast('Gemini API 키가 이 기기에 저장되었습니다.');
+    }
   });
   el.toggleApiKeyVisBtn.addEventListener('click', () => {
     el.apiKeyInput.type = el.apiKeyInput.type === 'password' ? 'text' : 'password';
@@ -2503,10 +2564,16 @@ function bindEvents() {
       return;
     }
     localStorage.setItem(STORAGE_KEYS.PARENT_PIN, p1);
+    localStorage.setItem(STORAGE_KEYS.PIN_UPDATED_AT, String(Date.now()));
     el.newPinInput.value = '';
     el.confirmPinInput.value = '';
     syncParentSystemControls();
-    showToast('부모 관리 비밀번호가 변경되었습니다!');
+    if (loadGitHubSyncConfig().enabled) {
+      cloudSync?.schedulePush(500);
+      showToast('부모 관리 비밀번호가 변경되었으며 GitHub 클라우드에 재암호화 동기화합니다!');
+    } else {
+      showToast('부모 관리 비밀번호가 변경되었습니다!');
+    }
   });
 
   el.previewSampleReportBtn.addEventListener('click', openSampleReport);
@@ -2675,20 +2742,228 @@ function bindEvents() {
     if (e.target === el.historyModal) el.historyModal.classList.add('hidden');
   });
 
+  // GitHub Private Repo Auto Cloud Sync
+  el.toggleGhTokenVisBtn.addEventListener('click', () => {
+    el.ghSyncTokenInput.type = el.ghSyncTokenInput.type === 'password' ? 'text' : 'password';
+  });
+  el.ghConnectSyncBtn.addEventListener('click', handleConnectGitHubSync);
+  el.ghSyncNowBtn.addEventListener('click', handleManualGitHubSync);
+  el.ghDisconnectBtn.addEventListener('click', handleDisconnectGitHubSync);
+  el.cloudSyncBadgeBtn.addEventListener('click', handleManualGitHubSync);
+
   // Cross-device family sync & backup
   el.copySyncLinkBtn.addEventListener('click', handleCopySyncLink);
   el.exportBackupBtn.addEventListener('click', handleExportBackup);
   el.importBackupBtn.addEventListener('click', () => el.importBackupInput.click());
   el.importBackupInput.addEventListener('change', handleImportBackupFile);
 
+  // Auto-sync triggers for FSRS deck, AI textbooks, and returning to tab
+  window.addEventListener('fluentcam:data-mutated', () => {
+    cloudSync?.schedulePush();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !state.inCall) {
+      cloudSync?.pullOnVisibilityIfStale(30000);
+    }
+  });
+
   academyPages.bindSubpageEvents();
+}
+
+// ==================== GITHUB PRIVATE REPO AUTO CLOUD SYNC ====================
+function formatSyncTime(ts) {
+  if (!ts) return '';
+  try {
+    return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return '';
+  }
+}
+
+function getLocalCloudSnapshot() {
+  const safeParse = (k, fallback) => {
+    try {
+      const raw = localStorage.getItem(k);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  return {
+    settings: safeParse(STORAGE_KEYS.SETTINGS, null),
+    settingsUpdatedAt: Number(localStorage.getItem(STORAGE_KEYS.SETTINGS_UPDATED_AT)) || 0,
+    apiKey: localStorage.getItem(STORAGE_KEYS.API_KEY) || el.apiKeyInput.value.trim() || '',
+    apiKeyUpdatedAt: Number(localStorage.getItem(STORAGE_KEYS.API_KEY_UPDATED_AT)) || 0,
+    pin: localStorage.getItem(STORAGE_KEYS.PARENT_PIN) || '0000',
+    pinUpdatedAt: Number(localStorage.getItem(STORAGE_KEYS.PIN_UPDATED_AT)) || 0,
+    history: loadHistory(),
+    fsrsDeck: loadFsrsDeck(),
+    aiBooks: loadCustomAiTextbooks(),
+    deletedAiBookIds: loadDeletedAiBookIds(),
+  };
+}
+
+function applyCloudMergedSnapshot(merged) {
+  if (merged.settings && typeof merged.settings === 'object') {
+    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(merged.settings));
+  }
+  if (merged.settingsUpdatedAt) {
+    localStorage.setItem(STORAGE_KEYS.SETTINGS_UPDATED_AT, String(merged.settingsUpdatedAt));
+  }
+  if (merged.apiKey && typeof merged.apiKey === 'string') {
+    localStorage.setItem(STORAGE_KEYS.API_KEY, merged.apiKey.trim());
+    el.apiKeyInput.value = merged.apiKey.trim();
+  }
+  if (merged.apiKeyUpdatedAt) {
+    localStorage.setItem(STORAGE_KEYS.API_KEY_UPDATED_AT, String(merged.apiKeyUpdatedAt));
+  }
+  if (merged.pin && /^\d{4}$/.test(String(merged.pin))) {
+    localStorage.setItem(STORAGE_KEYS.PARENT_PIN, String(merged.pin));
+  }
+  if (merged.pinUpdatedAt) {
+    localStorage.setItem(STORAGE_KEYS.PIN_UPDATED_AT, String(merged.pinUpdatedAt));
+  }
+  if (Array.isArray(merged.aiBooks)) {
+    localStorage.setItem(STORAGE_KEYS.AI_BOOKS, JSON.stringify(merged.aiBooks.slice(0, 40)));
+  }
+  if (Array.isArray(merged.deletedAiBookIds)) {
+    localStorage.setItem(STORAGE_KEYS.DELETED_AI_BOOKS, JSON.stringify(merged.deletedAiBookIds.slice(-100)));
+  }
+  if (Array.isArray(merged.history)) {
+    saveHistory(merged.history, { skipSync: true });
+  }
+  if (Array.isArray(merged.fsrsDeck)) {
+    localStorage.setItem(STORAGE_KEYS.FSRS_DECK, JSON.stringify(merged.fsrsDeck.slice(0, 300)));
+  }
+
+  restoreSettings();
+  if (!state.inCall) {
+    if (state.activeView === 'kidhome') renderKidHome();
+    if (state.activeView === 'parent') {
+      if (state.activeParentTab === 'edu') renderParentEducationTab();
+      if (state.activeParentTab === 'dash') academyPages.renderDashboardPage();
+      if (state.activeParentTab === 'system') syncParentSystemControls();
+    }
+    if (state.activeView === 'review') academyPages.renderReviewPage();
+    if (state.activeView === 'leveltest') academyPages.renderLevelTest();
+  }
+  updateBadges();
+}
+
+function renderCloudSyncStatusUi(status) {
+  const { state: st, message, repo, enabled, lastSyncedAt } = status;
+  const timeStr = formatSyncTime(lastSyncedAt);
+
+  // Header subtle cloud badge
+  el.cloudSyncBadgeBtn.classList.toggle('hidden', !enabled);
+  el.cloudSyncBadgeBtn.classList.remove('syncing', 'error', 'pin_required');
+  if (st === 'syncing') {
+    el.cloudSyncBadgeBtn.classList.add('syncing');
+    el.cloudSyncBadgeLabel.textContent = '동기화 중...';
+  } else if (st === 'error') {
+    el.cloudSyncBadgeBtn.classList.add('error');
+    el.cloudSyncBadgeLabel.textContent = '동기화 확인 필요';
+  } else if (st === 'pin_required') {
+    el.cloudSyncBadgeBtn.classList.add('pin_required');
+    el.cloudSyncBadgeLabel.textContent = 'PIN 확인 필요';
+  } else if (enabled) {
+    el.cloudSyncBadgeLabel.textContent = timeStr ? `GitHub · ${timeStr}` : 'GitHub 동기화';
+  }
+
+  // Parent Admin Tab 3 status badge & buttons
+  el.ghSyncStatusBadge.className = `gh-status-badge ${st === 'synced' ? 'synced' : st === 'syncing' ? 'syncing' : st === 'error' || st === 'pin_required' ? st : 'disconnected'}`;
+  if (!enabled) {
+    el.ghSyncStatusBadge.textContent = '연결 안 됨';
+    el.ghSyncStatusMeta.textContent =
+      message && st === 'error'
+        ? `오류: ${message}`
+        : '연결하면 설정 변경·수업 종료 시 자동으로 비공개 GitHub 저장소에 백업됩니다.';
+    el.ghConnectSyncBtn.textContent = '☁️ GitHub 연결 및 지금 동기화';
+    el.ghSyncNowBtn.classList.add('hidden');
+    el.ghDisconnectBtn.classList.add('hidden');
+  } else {
+    el.ghSyncStatusBadge.textContent =
+      st === 'syncing'
+        ? '동기화 중...'
+        : st === 'error'
+          ? '오류 발생'
+          : st === 'pin_required'
+            ? 'PIN 입력 필요'
+            : '자동 동기화 활성';
+    el.ghSyncStatusMeta.textContent =
+      st === 'error'
+        ? `오류: ${message}`
+        : st === 'pin_required'
+          ? message
+          : `${repo} 연결됨${timeStr ? ` · 마지막 동기화 ${timeStr}` : ''} (Gemini API 키는 AES-256 암호화 저장)`;
+    el.ghConnectSyncBtn.textContent = '☁️ 토큰/저장소 재연결';
+    el.ghSyncNowBtn.classList.remove('hidden');
+    el.ghDisconnectBtn.classList.remove('hidden');
+  }
+}
+
+cloudSync = createGitHubCloudSync({
+  getLocalSnapshot: getLocalCloudSnapshot,
+  applyMergedSnapshot: applyCloudMergedSnapshot,
+  onStatusChange: renderCloudSyncStatusUi,
+  requestCloudPinPrompt: async () =>
+    window.prompt(
+      'GitHub에 암호화 저장된 Gemini API 키를 복호화하려면 다른 기기에서 설정한 부모 관리 4자리 PIN을 입력해 주세요:',
+      ''
+    ),
+});
+
+async function handleConnectGitHubSync() {
+  const repo = el.ghSyncRepoInput.value.trim() || DEFAULT_SYNC_REPO;
+  const token = el.ghSyncTokenInput.value.trim();
+
+  el.ghConnectSyncBtn.disabled = true;
+  el.ghConnectSyncBtn.textContent = '☁️ 연결 및 암호화 동기화 중...';
+  try {
+    const res = await cloudSync.connectAndSync({ repo, token });
+    syncParentSystemControls();
+    if (res.pinNeeded) {
+      showToast('설정은 동기화됐어요! 부모 PIN을 맞추면 암호화된 API 키도 자동 복원됩니다.', 4500);
+    } else {
+      showToast('GitHub 비공개 저장소 자동 동기화가 연결되었습니다! 이제 어느 기기에서나 자동 반영돼요.', 4200);
+    }
+  } catch (err) {
+    showToast(err.message || 'GitHub 연결에 실패했습니다.', 4600);
+  } finally {
+    el.ghConnectSyncBtn.disabled = false;
+    cloudSync.emitCurrentStatus();
+  }
+}
+
+async function handleManualGitHubSync() {
+  try {
+    const res = await cloudSync.syncNow({ pushIfChanged: true, allowPinPrompt: true, silent: false });
+    if (res.ok) {
+      showToast(
+        res.changedLocally
+          ? 'GitHub 클라우드에서 최신 가족 설정과 학습 기록을 동기화했어요!'
+          : 'GitHub 비공개 저장소와 이미 최신 상태입니다.'
+      );
+    }
+  } catch (err) {
+    showToast(`동기화 실패: ${err.message}`, 4200);
+  }
+}
+
+function handleDisconnectGitHubSync() {
+  cloudSync.disconnect();
+  el.ghSyncTokenInput.value = '';
+  showToast('이 기기의 GitHub 자동 동기화 연결을 해제했습니다. (로컬 데이터는 유지됩니다)');
 }
 
 // ==================== CROSS-DEVICE FAMILY SYNC & BACKUP ====================
 function encodeSyncPayload(obj) {
   const bytes = new TextEncoder().encode(JSON.stringify(obj));
   let bin = '';
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
@@ -2702,7 +2977,7 @@ function decodeSyncPayload(encoded) {
 }
 
 function buildFamilySyncBundle({ includeApiKey = true, includeLearningData = false } = {}) {
-  saveSettings();
+  saveSettings({ skipSync: true });
   const safeParse = (k, fallback) => {
     try {
       const raw = localStorage.getItem(k);
@@ -2712,7 +2987,7 @@ function buildFamilySyncBundle({ includeApiKey = true, includeLearningData = fal
     }
   };
   const bundle = {
-    v: 1,
+    v: 2,
     exportedAt: Date.now(),
     settings: safeParse(STORAGE_KEYS.SETTINGS, null),
     pin: localStorage.getItem(STORAGE_KEYS.PARENT_PIN) || '0000',
@@ -2721,6 +2996,10 @@ function buildFamilySyncBundle({ includeApiKey = true, includeLearningData = fal
   if (includeApiKey) {
     const key = el.apiKeyInput.value.trim() || localStorage.getItem(STORAGE_KEYS.API_KEY) || '';
     if (key) bundle.apiKey = key;
+    const ghCfg = loadGitHubSyncConfig();
+    if (ghCfg.enabled && ghCfg.token) {
+      bundle.ghSync = { repo: ghCfg.repo, token: ghCfg.token };
+    }
   }
   if (includeLearningData) {
     bundle.history = safeParse(STORAGE_KEYS.HISTORY, []);
@@ -2731,11 +3010,14 @@ function buildFamilySyncBundle({ includeApiKey = true, includeLearningData = fal
 
 function applyFamilySyncBundle(bundle) {
   if (!bundle || typeof bundle !== 'object') return false;
+  const now = Date.now();
   if (bundle.apiKey && typeof bundle.apiKey === 'string') {
     localStorage.setItem(STORAGE_KEYS.API_KEY, bundle.apiKey.trim());
+    localStorage.setItem(STORAGE_KEYS.API_KEY_UPDATED_AT, String(bundle.exportedAt || now));
   }
   if (bundle.settings && typeof bundle.settings === 'object') {
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(bundle.settings));
+    localStorage.setItem(STORAGE_KEYS.SETTINGS_UPDATED_AT, String(bundle.exportedAt || now));
   }
   if (bundle.pin && /^\d{4}$/.test(String(bundle.pin))) {
     localStorage.setItem(STORAGE_KEYS.PARENT_PIN, String(bundle.pin));
@@ -2744,10 +3026,19 @@ function applyFamilySyncBundle(bundle) {
     localStorage.setItem(STORAGE_KEYS.AI_BOOKS, JSON.stringify(bundle.aiBooks.slice(0, 40)));
   }
   if (Array.isArray(bundle.history)) {
-    localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(bundle.history.slice(0, 50)));
+    localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(bundle.history.slice(0, 60)));
   }
   if (Array.isArray(bundle.fsrsDeck)) {
     localStorage.setItem(STORAGE_KEYS.FSRS_DECK, JSON.stringify(bundle.fsrsDeck.slice(0, 300)));
+  }
+  if (bundle.ghSync?.repo && bundle.ghSync?.token) {
+    saveGitHubSyncConfig({
+      repo: bundle.ghSync.repo,
+      token: bundle.ghSync.token,
+      enabled: true,
+      lastSyncedAt: 0,
+      lastSha: null,
+    });
   }
   return true;
 }
@@ -2759,7 +3050,7 @@ function tryApplySyncFromUrlHash() {
     const encoded = hash.slice(6).trim();
     const bundle = decodeSyncPayload(encoded);
     const ok = applyFamilySyncBundle(bundle);
-    // Immediately strip #sync=... from URL bar so API key never stays visible
+    // Immediately strip #sync=... from URL bar so API key & token never stay visible
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
     return ok;
   } catch (err) {
@@ -2777,9 +3068,10 @@ async function handleCopySyncLink() {
 
   try {
     await navigator.clipboard.writeText(syncUrl);
-    showToast('동기화 링크가 복사되었습니다! 카톡 등으로 다른 기기에 보내 클릭해 주세요.', 4200);
+    const ghNote = bundle.ghSync ? ' (GitHub 자동 동기화까지 1회 연결됨)' : '';
+    showToast(`1회용 기기 연결 링크가 복사되었습니다!${ghNote}`, 4200);
   } catch {
-    window.prompt('아래 동기화 링크를 복사해 다른 기기 브라우저에서 열어 주세요:', syncUrl);
+    window.prompt('아래 기기 연결 링크를 복사해 다른 기기 브라우저에서 열어 주세요:', syncUrl);
   }
 }
 
@@ -2810,6 +3102,7 @@ async function handleImportBackupFile(e) {
     renderParentEducationTab();
     syncParentSystemControls();
     updateBadges();
+    cloudSync?.schedulePush(500);
     showToast('백업 파일에서 모든 가족 설정과 학습 기록을 복원했어요!', 3800);
   } catch (err) {
     showToast(`백업 불러오기 실패: ${err.message}`, 4000);
@@ -2818,12 +3111,28 @@ async function handleImportBackupFile(e) {
 
 // ==================== INIT ====================
 function init() {
-  const synced = tryApplySyncFromUrlHash();
+  const syncedFromLink = tryApplySyncFromUrlHash();
   restoreSettings();
   bindEvents();
   switchView('kidhome');
-  if (synced) {
-    showToast('다른 기기의 가족 설정(자녀 프로필·교재·API 키)을 모두 불러왔어요!', 4500);
+  cloudSync.emitCurrentStatus();
+
+  const ghCfg = loadGitHubSyncConfig();
+  if (ghCfg.enabled) {
+    cloudSync.syncNow({ pushIfChanged: true, silent: true }).then((res) => {
+      if (res?.ok && res.changedLocally && !syncedFromLink) {
+        showToast('GitHub 비공개 저장소에서 최신 가족 설정을 불러왔어요!', 3200);
+      }
+    });
+  }
+
+  if (syncedFromLink) {
+    showToast(
+      ghCfg.enabled
+        ? '기기 연결 완료! 이제 GitHub 비공개 저장소와 자동 동기화됩니다.'
+        : '다른 기기의 가족 설정(자녀 프로필·교재·API 키)을 모두 불러왔어요!',
+      4500
+    );
   }
 }
 

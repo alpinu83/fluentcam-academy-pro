@@ -226,7 +226,7 @@ export function loadFsrsDeck() {
   try {
     const raw = localStorage.getItem(DECK_STORAGE_KEY);
     if (!raw) {
-      saveFsrsDeck(STARTER_CARDS);
+      saveFsrsDeck(STARTER_CARDS, { notify: false });
       return [...STARTER_CARDS];
     }
     const parsed = JSON.parse(raw);
@@ -236,8 +236,11 @@ export function loadFsrsDeck() {
   }
 }
 
-export function saveFsrsDeck(cards) {
+export function saveFsrsDeck(cards, { notify = true } = {}) {
   localStorage.setItem(DECK_STORAGE_KEY, JSON.stringify(cards.slice(0, 300)));
+  if (notify && typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('fluentcam:data-mutated', { detail: { kind: 'fsrs' } }));
+  }
 }
 
 export function ingestLessonIntoFsrsDeck({ studentId, topicLabel, report, whiteboardNotes = [] }) {

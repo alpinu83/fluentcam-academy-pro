@@ -997,16 +997,38 @@ export function loadCustomAiTextbooks() {
   }
 }
 
+const DELETED_CUSTOM_BOOKS_KEY = 'fluentcam_deleted_ai_books_v1';
+
+export function loadDeletedAiBookIds() {
+  try {
+    const raw = localStorage.getItem(DELETED_CUSTOM_BOOKS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 export function saveCustomAiTextbook(book) {
-  const existing = loadCustomAiTextbooks();
+  const existing = loadCustomAiTextbooks().filter((b) => b.id !== book.id);
   existing.unshift(book);
   localStorage.setItem(CUSTOM_BOOKS_KEY, JSON.stringify(existing.slice(0, 40)));
+  const deleted = loadDeletedAiBookIds().filter((id) => id !== book.id);
+  localStorage.setItem(DELETED_CUSTOM_BOOKS_KEY, JSON.stringify(deleted));
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('fluentcam:data-mutated', { detail: { kind: 'aibooks' } }));
+  }
   return existing;
 }
 
 export function deleteCustomAiTextbook(bookId) {
   const next = loadCustomAiTextbooks().filter((b) => b.id !== bookId);
   localStorage.setItem(CUSTOM_BOOKS_KEY, JSON.stringify(next));
+  const deleted = [...new Set([...loadDeletedAiBookIds(), bookId])].slice(-100);
+  localStorage.setItem(DELETED_CUSTOM_BOOKS_KEY, JSON.stringify(deleted));
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('fluentcam:data-mutated', { detail: { kind: 'aibooks' } }));
+  }
   return next;
 }
 
