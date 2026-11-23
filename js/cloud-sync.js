@@ -223,25 +223,39 @@ function ghHeaders(token) {
   };
 }
 
+export function cleanGitHubToken(raw) {
+  return String(raw || '')
+    .trim()
+    .replace(/^Bearer\s+/i, '')
+    .replace(/^token\s+/i, '')
+    .replace(/[\s\u200B-\u200D\uFEFF"']+/g, '');
+}
+
 export async function verifyPrivateRepoAccess({ repo, token }) {
   const slug = normalizeRepoSlug(repo);
+  const cleanedToken = cleanGitHubToken(token);
   if (!slug) throw new Error('저장소 형식이 올바르지 않습니다. (예: alpinu83/fluentcam-family-data)');
-  if (!token || token.length < 10) throw new Error('GitHub Personal Access Token을 입력해 주세요.');
+  if (!cleanedToken || cleanedToken.length < 10) {
+    throw new Error('GitHub Personal Access Token을 오른쪽 [GitHub Personal Access Token] 칸에 입력해 주세요.');
+  }
+  if (cleanedToken.startsWith('AIza')) {
+    throw new Error('Gemini API 키(AIza...)가 입력되었습니다. GitHub에서 발급한 토큰(github_pat_... 또는 ghp_...)을 입력해 주세요.');
+  }
 
   const res = await fetch(`https://api.github.com/repos/${slug}`, {
     method: 'GET',
-    headers: ghHeaders(token),
+    headers: ghHeaders(cleanedToken),
     cache: 'no-store',
   });
 
   if (res.status === 401) {
-    throw new Error('GitHub 토큰 인증에 실패했습니다. 토큰이 만료되었거나 오타가 있는지 확인해 주세요.');
+    throw new Error('GitHub 토큰 인증에 실패했습니다 (401). 토큰이 만료되었거나 오타가 있는지 확인해 주세요.');
   }
   if (res.status === 403) {
-    throw new Error('GitHub 접근 권한이 거부되었습니다. 토큰의 저장소 권한을 확인해 주세요.');
+    throw new Error('GitHub 접근 권한이 거부되었습니다 (403). 토큰에 [Contents: Read and write] 권한을 확인해 주세요.');
   }
   if (res.status === 404) {
-    throw new Error(`저장소(${slug})를 찾을 수 없거나 토큰에 이 저장소 접근 권한이 부여되지 않았습니다.`);
+    throw new Error(`저장소(${slug})에 접근할 수 없습니다 (404). 토큰 생성 시 [Only select repositories]에서 fluentcam-family-data를 선택했는지 확인해 주세요.`);
   }
   if (!res.ok) {
     throw new Error(`GitHub 연결 오류 (HTTP ${res.status})`);
@@ -251,14 +265,12 @@ export async function verifyPrivateRepoAccess({ repo, token }) {
   if (!meta.private) {
     throw new Error('보안을 위해 공개(Public) 저장소에는 동기화할 수 없습니다. 비공개(Private) 저장소를 지정해 주세요.');
   }
-  if (meta.permissions && meta.permissions.push === false) {
-    throw new Error('토큰에 쓰기 권한이 없습니다. Fine-grained 토큰에서 [Contents: Read and write] 권한을 켜 주세요.');
-  }
 
   return {
     fullName: meta.full_name || slug,
     defaultBranch: meta.default_branch || SYNC_BRANCH,
     isPrivate: Boolean(meta.private),
+    cleanedToken,
   };
 }
 
@@ -733,15 +745,20 @@ export function createGitHubCloudSync({
   }
 
   async function connectAndSync({ repo, token }) {
-    const verified = await verifyPrivateRepoAccess({ repo, token });
-    saveGitHubSyncConfig({
-      repo: verified.fullName,
-      token: token.trim(),
-      enabled: true,
-      lastSyncedAt: 0,
-      lastSha: null,
-    });
-    return syncNow({ pushIfChanged: true, allowPinPrompt: true, silent: false });
+    try {
+      const verified = await verifyPrivateRepoAccess({ repo, token });
+      saveGitHubSyncConfig({
+        repo: verified.fullName,
+        token: verified.cleanedToken,
+        enabled: true,
+        lastSyncedAt: 0,
+        lastSha: null,
+      });
+      return await syncNow({ pushIfChanged: true, allowPinPrompt: true, silent: false });
+    } catch (err) {
+      emitStatus('error', err.message || 'GitHub 연결 오류');
+      throw err;
+    }
   }
 
   function disconnect() {

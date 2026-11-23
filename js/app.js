@@ -26,10 +26,11 @@ import {
 } from './feedback.js';
 import {
   DEFAULT_SYNC_REPO,
+  cleanGitHubToken,
   createGitHubCloudSync,
   loadGitHubSyncConfig,
   saveGitHubSyncConfig,
-} from './cloud-sync.js';
+} from './cloud-sync.js?v=20261123c';
 
 const STORAGE_KEYS = {
   API_KEY: 'fluentcam_gemini_api_key',
@@ -244,6 +245,7 @@ const el = {
   ghSyncStatusBadge: document.getElementById('ghSyncStatusBadge'),
   ghSyncRepoInput: document.getElementById('ghSyncRepoInput'),
   ghSyncTokenInput: document.getElementById('ghSyncTokenInput'),
+  ghSyncTokenHint: document.getElementById('ghSyncTokenHint'),
   toggleGhTokenVisBtn: document.getElementById('toggleGhTokenVisBtn'),
   ghSyncStatusMeta: document.getElementById('ghSyncStatusMeta'),
   ghConnectSyncBtn: document.getElementById('ghConnectSyncBtn'),
@@ -1164,8 +1166,14 @@ function syncParentSystemControls() {
   el.pinStatusHint.textContent = getParentPin() === '0000' ? '현재 기본값: 0000 (변경을 권장해요)' : '사용자 비밀번호 설정됨';
 
   const ghCfg = loadGitHubSyncConfig();
-  el.ghSyncRepoInput.value = ghCfg.repo || DEFAULT_SYNC_REPO;
-  el.ghSyncTokenInput.value = ghCfg.token || '';
+  if (!el.ghSyncRepoInput.value.trim() || ghCfg.enabled) {
+    el.ghSyncRepoInput.value = ghCfg.repo || DEFAULT_SYNC_REPO;
+  }
+  // Never wipe an unsaved token the parent just typed/pasted before clicking Connect
+  if (ghCfg.token && !el.ghSyncTokenInput.value.trim()) {
+    el.ghSyncTokenInput.value = ghCfg.token;
+  }
+  updateGhTokenHint();
   cloudSync?.emitCurrentStatus();
 }
 
@@ -2746,6 +2754,13 @@ function bindEvents() {
   el.toggleGhTokenVisBtn.addEventListener('click', () => {
     el.ghSyncTokenInput.type = el.ghSyncTokenInput.type === 'password' ? 'text' : 'password';
   });
+  el.ghSyncTokenInput.addEventListener('input', updateGhTokenHint);
+  el.ghSyncTokenInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleConnectGitHubSync();
+    }
+  });
   el.ghConnectSyncBtn.addEventListener('click', handleConnectGitHubSync);
   el.ghSyncNowBtn.addEventListener('click', handleManualGitHubSync);
   el.ghDisconnectBtn.addEventListener('click', handleDisconnectGitHubSync);
@@ -2913,14 +2928,53 @@ cloudSync = createGitHubCloudSync({
     ),
 });
 
+function updateGhTokenHint() {
+  if (!el.ghSyncTokenHint) return;
+  const cleaned = cleanGitHubToken(el.ghSyncTokenInput.value);
+  if (!cleaned) {
+    el.ghSyncTokenHint.textContent = '';
+    el.ghSyncTokenHint.style.color = '';
+    return;
+  }
+  if (cleaned.startsWith('AIza')) {
+    el.ghSyncTokenHint.textContent = '⚠ Gemini API 키(AIza...)가 입력되었습니다. GitHub 토큰(github_pat_... / ghp_...)을 입력해 주세요.';
+    el.ghSyncTokenHint.style.color = '#fca5a5';
+    return;
+  }
+  if (cleaned.length < 10) {
+    el.ghSyncTokenHint.textContent = `⚠ 토큰이 너무 짧습니다 (${cleaned.length}자). GitHub에서 복사한 전체 토큰을 붙여넣어 주세요.`;
+    el.ghSyncTokenHint.style.color = '#fde68a';
+    return;
+  }
+  el.ghSyncTokenHint.textContent = `✓ GitHub 토큰 입력됨 (${cleaned.length}자) — 아래 [☁️ GitHub 연결 및 지금 동기화] 버튼을 눌러주세요.`;
+  el.ghSyncTokenHint.style.color = '#86efac';
+}
+
 async function handleConnectGitHubSync() {
   const repo = el.ghSyncRepoInput.value.trim() || DEFAULT_SYNC_REPO;
-  const token = el.ghSyncTokenInput.value.trim();
+  const rawToken = el.ghSyncTokenInput.value;
+  const cleanedToken = cleanGitHubToken(rawToken);
+
+  // Detect common accidental paste into the left Gemini API key field
+  if (!cleanedToken) {
+    const geminiVal = cleanGitHubToken(el.apiKeyInput.value);
+    if (geminiVal.startsWith('github_pat_') || geminiVal.startsWith('ghp_')) {
+      const msg = 'GitHub 토큰이 왼쪽 [Gemini API 키] 칸에 입력되어 있습니다! 오른쪽 [GitHub Personal Access Token] 칸에 붙여넣어 주세요.';
+      el.ghSyncStatusBadge.className = 'gh-status-badge error';
+      el.ghSyncStatusBadge.textContent = '입력 칸 확인';
+      el.ghSyncStatusMeta.textContent = msg;
+      showToast(msg, 5200);
+      el.ghSyncTokenInput.focus();
+      return;
+    }
+  }
 
   el.ghConnectSyncBtn.disabled = true;
   el.ghConnectSyncBtn.textContent = '☁️ 연결 및 암호화 동기화 중...';
+  let hadError = false;
   try {
-    const res = await cloudSync.connectAndSync({ repo, token });
+    const res = await cloudSync.connectAndSync({ repo, token: cleanedToken });
+    el.ghSyncTokenInput.value = cleanedToken;
     syncParentSystemControls();
     if (res.pinNeeded) {
       showToast('설정은 동기화됐어요! 부모 PIN을 맞추면 암호화된 API 키도 자동 복원됩니다.', 4500);
@@ -2928,10 +2982,21 @@ async function handleConnectGitHubSync() {
       showToast('GitHub 비공개 저장소 자동 동기화가 연결되었습니다! 이제 어느 기기에서나 자동 반영돼요.', 4200);
     }
   } catch (err) {
-    showToast(err.message || 'GitHub 연결에 실패했습니다.', 4600);
+    hadError = true;
+    const msg = err.message || 'GitHub 연결에 실패했습니다.';
+    el.ghSyncStatusBadge.className = 'gh-status-badge error';
+    el.ghSyncStatusBadge.textContent = '오류 발생';
+    el.ghSyncStatusMeta.textContent = `오류: ${msg}`;
+    showToast(msg, 5200);
   } finally {
     el.ghConnectSyncBtn.disabled = false;
-    cloudSync.emitCurrentStatus();
+    if (hadError) {
+      el.ghConnectSyncBtn.textContent = loadGitHubSyncConfig().enabled
+        ? '☁️ 토큰/저장소 재연결'
+        : '☁️ GitHub 연결 및 지금 동기화';
+    } else {
+      cloudSync.emitCurrentStatus();
+    }
   }
 }
 
@@ -2953,6 +3018,7 @@ async function handleManualGitHubSync() {
 function handleDisconnectGitHubSync() {
   cloudSync.disconnect();
   el.ghSyncTokenInput.value = '';
+  updateGhTokenHint();
   showToast('이 기기의 GitHub 자동 동기화 연결을 해제했습니다. (로컬 데이터는 유지됩니다)');
 }
 
