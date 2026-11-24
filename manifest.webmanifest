@@ -1,0 +1,17 @@
+{
+  "name": "FluentCam Academy Pro · AI 원어민 화상영어",
+  "short_name": "FluentCam",
+  "description": "초등·주니어 1:1 AI 원어민 실시간 화상영어 교실 · 가족 클라우드 자동 동기화",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#141210",
+  "theme_color": "#141210",
+  "orientation": "any",
+  "lang": "ko",
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

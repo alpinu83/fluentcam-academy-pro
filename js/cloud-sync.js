@@ -342,7 +342,7 @@ async function putCloudFile({ repo, token, branch = SYNC_BRANCH, sha, data }) {
 }
 
 // ==================== CONFLICT-FREE SMART MERGE ====================
-function mergeSettings(localSettings, localTs, cloudSettings, cloudTs) {
+export function mergeSettings(localSettings, localTs, cloudSettings, cloudTs) {
   if (!cloudSettings) return { settings: localSettings, settingsUpdatedAt: localTs };
   if (!localSettings) return { settings: cloudSettings, settingsUpdatedAt: cloudTs || Date.now() };
 
@@ -368,7 +368,7 @@ function mergeSettings(localSettings, localTs, cloudSettings, cloudTs) {
   };
 }
 
-function mergeHistory(localArr = [], cloudArr = []) {
+export function mergeHistory(localArr = [], cloudArr = []) {
   const map = new Map();
   for (const item of [...cloudArr, ...localArr]) {
     if (!item?.id) continue;
@@ -386,7 +386,7 @@ function mergeHistory(localArr = [], cloudArr = []) {
     .slice(0, 60);
 }
 
-function mergeFsrsDeck(localArr = [], cloudArr = []) {
+export function mergeFsrsDeck(localArr = [], cloudArr = []) {
   const map = new Map();
   for (const card of [...cloudArr, ...localArr]) {
     if (!card?.id) continue;
@@ -402,7 +402,7 @@ function mergeFsrsDeck(localArr = [], cloudArr = []) {
   return [...map.values()].slice(0, 300);
 }
 
-function mergeAiBooks(localBooks = [], cloudBooks = [], localDeleted = [], cloudDeleted = []) {
+export function mergeAiBooks(localBooks = [], cloudBooks = [], localDeleted = [], cloudDeleted = []) {
   const deletedSet = new Set([...(localDeleted || []), ...(cloudDeleted || [])]);
   const map = new Map();
   for (const b of [...cloudBooks, ...localBooks]) {

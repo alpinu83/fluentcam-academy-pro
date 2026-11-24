@@ -37,7 +37,14 @@ import {
   createGitHubCloudSync,
   loadGitHubSyncConfig,
   saveGitHubSyncConfig,
-} from './cloud-sync.js?v=20261123c';
+} from './cloud-sync.js?v=20261124f';
+import {
+  buildFamilyShareUrl,
+  cleanFamilyCode,
+  createFirebaseCloudSync,
+  generateFamilyCode,
+  loadFirebaseSyncConfig,
+} from './firebase-sync.js?v=20261124f';
 
 const STORAGE_KEYS = {
   API_KEY: 'fluentcam_gemini_api_key',
@@ -208,6 +215,7 @@ const state = {
 const el = {
   topHeader: document.getElementById('topHeader'),
   brandHomeBtn: document.getElementById('brandHomeBtn'),
+  installPwaBtn: document.getElementById('installPwaBtn'),
   cloudSyncBadgeBtn: document.getElementById('cloudSyncBadgeBtn'),
   cloudSyncBadgeLabel: document.getElementById('cloudSyncBadgeLabel'),
   openHistoryBtn: document.getElementById('openHistoryBtn'),
@@ -267,6 +275,16 @@ const el = {
   reportModelSelect: document.getElementById('reportModelSelect'),
   videoIntervalSelect: document.getElementById('videoIntervalSelect'),
   enableToolsCheckbox: document.getElementById('enableToolsCheckbox'),
+
+  fbSyncStatusBadge: document.getElementById('fbSyncStatusBadge'),
+  fbFamilyCodeInput: document.getElementById('fbFamilyCodeInput'),
+  toggleFbCodeVisBtn: document.getElementById('toggleFbCodeVisBtn'),
+  fbSyncStatusMeta: document.getElementById('fbSyncStatusMeta'),
+  fbConnectBtn: document.getElementById('fbConnectBtn'),
+  fbCopyLinkBtn: document.getElementById('fbCopyLinkBtn'),
+  fbCreateCodeBtn: document.getElementById('fbCreateCodeBtn'),
+  fbSyncNowBtn: document.getElementById('fbSyncNowBtn'),
+  fbDisconnectBtn: document.getElementById('fbDisconnectBtn'),
 
   ghSyncStatusBadge: document.getElementById('ghSyncStatusBadge'),
   ghSyncRepoInput: document.getElementById('ghSyncRepoInput'),
@@ -453,6 +471,13 @@ const el = {
 
 const whiteboard = new ClassroomWhiteboard(el.bookWhiteboardCanvas);
 let cloudSync = null;
+let firebaseSync = null;
+let deferredInstallPrompt = null;
+
+function scheduleAllCloudPushes(delayMs) {
+  firebaseSync?.schedulePush(delayMs);
+  cloudSync?.schedulePush(delayMs);
+}
 
 // ==================== HELPERS ====================
 let toastTimer = null;
@@ -580,7 +605,7 @@ function loadHistory() {
 function saveHistory(items, { skipSync = false } = {}) {
   localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(items.slice(0, 60)));
   updateBadges();
-  if (!skipSync) cloudSync?.schedulePush();
+  if (!skipSync) scheduleAllCloudPushes();
 }
 
 function updateBadges() {
@@ -665,7 +690,7 @@ function saveSettings({ skipSync = false } = {}) {
   );
   if (!skipSync) {
     localStorage.setItem(STORAGE_KEYS.SETTINGS_UPDATED_AT, String(Date.now()));
-    cloudSync?.schedulePush();
+    scheduleAllCloudPushes();
   }
   updateBadges();
 }
@@ -1259,6 +1284,12 @@ function syncParentSystemControls() {
     b.classList.toggle('active', b.dataset.speechMode === state.speechMode);
   });
   el.pinStatusHint.textContent = getParentPin() === '0000' ? '현재 기본값: 0000 (변경을 권장해요)' : '사용자 비밀번호 설정됨';
+
+  const fbCfg = loadFirebaseSyncConfig();
+  if (fbCfg.familyCode && el.fbFamilyCodeInput && !el.fbFamilyCodeInput.value.trim()) {
+    el.fbFamilyCodeInput.value = fbCfg.familyCode;
+  }
+  firebaseSync?.emitCurrentStatus();
 
   const ghCfg = loadGitHubSyncConfig();
   if (!el.ghSyncRepoInput.value.trim() || ghCfg.enabled) {
@@ -2861,7 +2892,8 @@ function bindEvents() {
       showToast('부모 관리 모드가 열렸습니다.');
       return;
     }
-    const cloudMatch = await cloudSync?.tryUnlockWithPin(entered);
+    const fbMatch = await firebaseSync?.tryUnlockWithPin(entered);
+    const cloudMatch = fbMatch?.matched ? fbMatch : await cloudSync?.tryUnlockWithPin(entered);
     if (cloudMatch?.matched) {
       localStorage.setItem(STORAGE_KEYS.PARENT_PIN, entered);
       if (cloudMatch.pinUpdatedAt) {
@@ -2877,6 +2909,7 @@ function bindEvents() {
       state.parentUnlocked = true;
       el.pinModal.classList.add('hidden');
       switchView('parent');
+      firebaseSync?.emitCurrentStatus();
       cloudSync?.emitCurrentStatus();
       showToast('클라우드 부모 PIN 확인 완료! 암호화된 API 키까지 자동 복원했어요.', 3800);
       return;
@@ -2996,10 +3029,11 @@ function bindEvents() {
   el.apiKeyInput.addEventListener('change', () => {
     localStorage.setItem(STORAGE_KEYS.API_KEY, el.apiKeyInput.value.trim());
     localStorage.setItem(STORAGE_KEYS.API_KEY_UPDATED_AT, String(Date.now()));
+    const fbCfg = loadFirebaseSyncConfig();
     const ghCfg = loadGitHubSyncConfig();
-    if (ghCfg.enabled) {
-      cloudSync?.schedulePush(600);
-      showToast('Gemini API 키를 저장하고 GitHub 비공개 저장소에 암호화 동기화합니다.');
+    if (fbCfg.enabled || ghCfg.enabled) {
+      scheduleAllCloudPushes(500);
+      showToast('Gemini API 키를 저장하고 가족 클라우드에 암호화 동기화합니다.');
     } else {
       showToast('Gemini API 키가 이 기기에 저장되었습니다.');
     }
@@ -3070,9 +3104,9 @@ function bindEvents() {
     el.newPinInput.value = '';
     el.confirmPinInput.value = '';
     syncParentSystemControls();
-    if (loadGitHubSyncConfig().enabled) {
-      cloudSync?.schedulePush(500);
-      showToast('부모 관리 비밀번호가 변경되었으며 GitHub 클라우드에 재암호화 동기화합니다!');
+    if (loadFirebaseSyncConfig().enabled || loadGitHubSyncConfig().enabled) {
+      scheduleAllCloudPushes(500);
+      showToast('부모 관리 비밀번호가 변경되었으며 가족 클라우드에 재암호화 동기화합니다!');
     } else {
       showToast('부모 관리 비밀번호가 변경되었습니다!');
     }
@@ -3244,7 +3278,44 @@ function bindEvents() {
     if (e.target === el.historyModal) el.historyModal.classList.add('hidden');
   });
 
-  // GitHub Private Repo Auto Cloud Sync
+  // Chrome / Edge Web App (PWA) 1-Click Install Prompt
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    el.installPwaBtn?.classList.remove('hidden');
+  });
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    el.installPwaBtn?.classList.add('hidden');
+    showToast('FluentCam 웹앱이 설치되었어요! 홈 화면에서 바로 실행할 수 있습니다.', 3600);
+  });
+  el.installPwaBtn?.addEventListener('click', async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    const choice = await deferredInstallPrompt.userChoice.catch(() => null);
+    if (choice?.outcome === 'accepted') {
+      deferredInstallPrompt = null;
+      el.installPwaBtn.classList.add('hidden');
+    }
+  });
+
+  // KidQuest-Compatible Firebase Realtime Family Sync (Primary — Zero Token!)
+  el.toggleFbCodeVisBtn?.addEventListener('click', () => {
+    el.fbFamilyCodeInput.type = el.fbFamilyCodeInput.type === 'password' ? 'text' : 'password';
+  });
+  el.fbFamilyCodeInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleConnectFirebaseSync();
+    }
+  });
+  el.fbConnectBtn?.addEventListener('click', handleConnectFirebaseSync);
+  el.fbCreateCodeBtn?.addEventListener('click', handleCreateFamilyCode);
+  el.fbCopyLinkBtn?.addEventListener('click', handleCopyFamilyShareLink);
+  el.fbSyncNowBtn?.addEventListener('click', handleManualFirebaseSync);
+  el.fbDisconnectBtn?.addEventListener('click', handleDisconnectFirebaseSync);
+
+  // GitHub Private Repo Auto Cloud Sync (Optional Secondary Backup)
   el.toggleGhTokenVisBtn.addEventListener('click', () => {
     el.ghSyncTokenInput.type = el.ghSyncTokenInput.type === 'password' ? 'text' : 'password';
   });
@@ -3258,7 +3329,10 @@ function bindEvents() {
   el.ghConnectSyncBtn.addEventListener('click', handleConnectGitHubSync);
   el.ghSyncNowBtn.addEventListener('click', handleManualGitHubSync);
   el.ghDisconnectBtn.addEventListener('click', handleDisconnectGitHubSync);
-  el.cloudSyncBadgeBtn.addEventListener('click', handleManualGitHubSync);
+  el.cloudSyncBadgeBtn.addEventListener('click', () => {
+    if (loadFirebaseSyncConfig().enabled) handleManualFirebaseSync();
+    else handleManualGitHubSync();
+  });
 
   // Cross-device family sync & backup
   el.copySyncLinkBtn.addEventListener('click', handleCopySyncLink);
@@ -3268,10 +3342,11 @@ function bindEvents() {
 
   // Auto-sync triggers for FSRS deck, AI textbooks, and returning to tab
   window.addEventListener('fluentcam:data-mutated', () => {
-    cloudSync?.schedulePush();
+    scheduleAllCloudPushes();
   });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && !state.inCall) {
+      firebaseSync?.pullOnVisibilityIfStale(20000);
       cloudSync?.pullOnVisibilityIfStale(30000);
     }
   });
@@ -3359,34 +3434,96 @@ function applyCloudMergedSnapshot(merged) {
   updateBadges();
 }
 
+let latestFirebaseStatus = { state: 'disconnected', enabled: false, lastSyncedAt: 0 };
+let latestGithubStatus = { state: 'disconnected', enabled: false, lastSyncedAt: 0 };
+
+function renderHeaderCloudBadge() {
+  const active = latestFirebaseStatus.enabled
+    ? { ...latestFirebaseStatus, labelPrefix: '가족 동기화' }
+    : latestGithubStatus.enabled
+      ? { ...latestGithubStatus, labelPrefix: 'GitHub' }
+      : null;
+
+  el.cloudSyncBadgeBtn.classList.toggle('hidden', !active);
+  el.cloudSyncBadgeBtn.classList.remove('syncing', 'error', 'pin_required');
+  if (!active) return;
+
+  const timeStr = formatSyncTime(active.lastSyncedAt);
+  if (active.state === 'syncing') {
+    el.cloudSyncBadgeBtn.classList.add('syncing');
+    el.cloudSyncBadgeLabel.textContent = '동기화 중...';
+  } else if (active.state === 'error') {
+    el.cloudSyncBadgeBtn.classList.add('error');
+    el.cloudSyncBadgeLabel.textContent = '동기화 확인 필요';
+  } else if (active.state === 'pin_required') {
+    el.cloudSyncBadgeBtn.classList.add('pin_required');
+    el.cloudSyncBadgeLabel.textContent = 'PIN 확인 필요';
+  } else {
+    el.cloudSyncBadgeLabel.textContent = timeStr
+      ? `${active.labelPrefix} · ${timeStr}`
+      : active.labelPrefix;
+  }
+}
+
+function renderFirebaseSyncStatusUi(status) {
+  latestFirebaseStatus = status;
+  renderHeaderCloudBadge();
+
+  if (!el.fbSyncStatusBadge) return;
+  const { state: st, message, enabled, lastSyncedAt, source } = status;
+  const timeStr = formatSyncTime(lastSyncedAt);
+
+  el.fbSyncStatusBadge.className = `gh-status-badge ${st === 'synced' ? 'synced' : st === 'syncing' ? 'syncing' : st === 'error' || st === 'pin_required' ? st : 'disconnected'}`;
+  if (!enabled) {
+    el.fbSyncStatusBadge.textContent = '연결 대기';
+    el.fbSyncStatusMeta.textContent =
+      message && st === 'error'
+        ? `오류: ${message}`
+        : 'KidQuest를 이미 쓰는 기기라면 자동 연결되며, 새 기기라면 아래 [✨ 새 가족 코드 만들기] 또는 공유 링크로 1회 연결하세요.';
+    el.fbConnectBtn.textContent = '⚡ 가족 코드로 연결';
+    el.fbCopyLinkBtn.classList.add('hidden');
+    el.fbCreateCodeBtn.classList.remove('hidden');
+    el.fbSyncNowBtn.classList.add('hidden');
+    el.fbDisconnectBtn.classList.add('hidden');
+  } else {
+    const srcNote = source === 'kidquest' ? ' (KidQuest 가족 코드 자동 감지됨)' : '';
+    el.fbSyncStatusBadge.textContent =
+      st === 'syncing'
+        ? '동기화 중...'
+        : st === 'error'
+          ? '오류 발생'
+          : st === 'pin_required'
+            ? 'PIN 입력 필요'
+            : '실시간 자동 공유 중';
+    el.fbSyncStatusMeta.textContent =
+      st === 'error'
+        ? `오류: ${message}`
+        : st === 'pin_required'
+          ? message
+          : `실시간 가족 클라우드 연결됨${srcNote}${timeStr ? ` · 마지막 동기화 ${timeStr}` : ''} (Gemini API 키 AES-256 암호화)`;
+    el.fbConnectBtn.textContent = '⚡ 가족 코드 변경';
+    el.fbCopyLinkBtn.classList.remove('hidden');
+    el.fbCreateCodeBtn.classList.add('hidden');
+    el.fbSyncNowBtn.classList.remove('hidden');
+    el.fbDisconnectBtn.classList.remove('hidden');
+  }
+}
+
 function renderCloudSyncStatusUi(status) {
+  latestGithubStatus = status;
+  renderHeaderCloudBadge();
+
   const { state: st, message, repo, enabled, lastSyncedAt } = status;
   const timeStr = formatSyncTime(lastSyncedAt);
 
-  // Header subtle cloud badge
-  el.cloudSyncBadgeBtn.classList.toggle('hidden', !enabled);
-  el.cloudSyncBadgeBtn.classList.remove('syncing', 'error', 'pin_required');
-  if (st === 'syncing') {
-    el.cloudSyncBadgeBtn.classList.add('syncing');
-    el.cloudSyncBadgeLabel.textContent = '동기화 중...';
-  } else if (st === 'error') {
-    el.cloudSyncBadgeBtn.classList.add('error');
-    el.cloudSyncBadgeLabel.textContent = '동기화 확인 필요';
-  } else if (st === 'pin_required') {
-    el.cloudSyncBadgeBtn.classList.add('pin_required');
-    el.cloudSyncBadgeLabel.textContent = 'PIN 확인 필요';
-  } else if (enabled) {
-    el.cloudSyncBadgeLabel.textContent = timeStr ? `GitHub · ${timeStr}` : 'GitHub 동기화';
-  }
-
-  // Parent Admin Tab 3 status badge & buttons
+  // Parent Admin Tab 3 GitHub optional backup card
   el.ghSyncStatusBadge.className = `gh-status-badge ${st === 'synced' ? 'synced' : st === 'syncing' ? 'syncing' : st === 'error' || st === 'pin_required' ? st : 'disconnected'}`;
   if (!enabled) {
     el.ghSyncStatusBadge.textContent = '연결 안 됨';
     el.ghSyncStatusMeta.textContent =
       message && st === 'error'
         ? `오류: ${message}`
-        : '연결하면 설정 변경·수업 종료 시 자동으로 비공개 GitHub 저장소에 백업됩니다.';
+        : '연결하면 설정 변경·수업 종료 시 GitHub에도 추가 백업됩니다.';
     el.ghConnectSyncBtn.textContent = '☁️ GitHub 연결 및 지금 동기화';
     el.ghSyncNowBtn.classList.add('hidden');
     el.ghDisconnectBtn.classList.add('hidden');
@@ -3398,7 +3535,7 @@ function renderCloudSyncStatusUi(status) {
           ? '오류 발생'
           : st === 'pin_required'
             ? 'PIN 입력 필요'
-            : '자동 동기화 활성';
+            : '추가 백업 활성';
     el.ghSyncStatusMeta.textContent =
       st === 'error'
         ? `오류: ${message}`
@@ -3411,6 +3548,17 @@ function renderCloudSyncStatusUi(status) {
   }
 }
 
+firebaseSync = createFirebaseCloudSync({
+  getLocalSnapshot: getLocalCloudSnapshot,
+  applyMergedSnapshot: applyCloudMergedSnapshot,
+  onStatusChange: renderFirebaseSyncStatusUi,
+  requestCloudPinPrompt: async () =>
+    window.prompt(
+      '가족 클라우드에 암호화 저장된 Gemini API 키를 복호화하려면 부모 관리 4자리 PIN을 입력해 주세요:',
+      ''
+    ),
+});
+
 cloudSync = createGitHubCloudSync({
   getLocalSnapshot: getLocalCloudSnapshot,
   applyMergedSnapshot: applyCloudMergedSnapshot,
@@ -3421,6 +3569,83 @@ cloudSync = createGitHubCloudSync({
       ''
     ),
 });
+
+async function handleConnectFirebaseSync() {
+  const raw = el.fbFamilyCodeInput?.value || '';
+  const cleaned = cleanFamilyCode(raw);
+  if (cleaned.length < 24) {
+    const msg = '가족 코드는 24자 이상이어야 합니다. KidQuest 가족 코드를 붙여넣거나 [✨ 새 가족 코드 만들기]를 눌러주세요.';
+    showToast(msg, 4200);
+    el.fbSyncStatusMeta.textContent = msg;
+    el.fbFamilyCodeInput?.focus();
+    return;
+  }
+  el.fbConnectBtn.disabled = true;
+  el.fbConnectBtn.textContent = '연결 및 동기화 중...';
+  try {
+    el.fbFamilyCodeInput.value = cleaned;
+    const res = await firebaseSync.connectWithFamilyCode(cleaned);
+    if (res?.ok) {
+      showToast(
+        res.pinNeeded
+          ? '가족 클라우드 연결됨! 부모 관리 PIN을 맞추면 암호화된 API 키까지 복원됩니다.'
+          : '⚡ 가족 실시간 자동 동기화 완료! 이제 모든 기기에서 자동 공유됩니다.',
+        4200
+      );
+    }
+  } catch (err) {
+    showToast(`가족 클라우드 연결 실패: ${err.message}`, 4500);
+  } finally {
+    el.fbConnectBtn.disabled = false;
+    firebaseSync.emitCurrentStatus();
+  }
+}
+
+async function handleCreateFamilyCode() {
+  const newCode = generateFamilyCode(28);
+  el.fbFamilyCodeInput.value = newCode;
+  await handleConnectFirebaseSync();
+}
+
+async function handleCopyFamilyShareLink() {
+  const cfg = loadFirebaseSyncConfig();
+  const code = cfg.familyCode || cleanFamilyCode(el.fbFamilyCodeInput?.value || '');
+  if (code.length < 24) {
+    showToast('먼저 가족 코드를 연결하거나 생성해 주세요.');
+    return;
+  }
+  const url = buildFamilyShareUrl(code);
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('가족 공유 링크가 복사되었어요! 다른 기기에서 한 번만 열면 자동 동기화됩니다.', 4200);
+  } catch {
+    window.prompt('아래 가족 공유 링크를 복사해 다른 기기에서 열어 주세요:', url);
+  }
+}
+
+async function handleManualFirebaseSync() {
+  try {
+    const res = await firebaseSync.syncNow({ pushIfChanged: true, allowPinPrompt: true, silent: false });
+    if (res?.ok) {
+      showToast(
+        res.changedLocally
+          ? '⚡ 가족 클라우드에서 최신 설정·학습 기록을 불러와 합쳤어요!'
+          : '⚡ 가족 클라우드와 최신 상태로 동기화되었습니다!'
+      );
+    }
+  } catch (err) {
+    showToast(`동기화 오류: ${err.message}`, 4500);
+  }
+}
+
+function handleDisconnectFirebaseSync() {
+  if (!window.confirm('이 기기의 가족 클라우드 자동 동기화를 해제할까요? (클라우드에 저장된 가족 데이터는 유지됩니다)')) {
+    return;
+  }
+  firebaseSync.disconnect();
+  if (el.fbFamilyCodeInput) el.fbFamilyCodeInput.value = '';
+  showToast('가족 클라우드 동기화가 해제되었습니다.');
+}
 
 function updateGhTokenHint() {
   if (!el.ghSyncTokenHint) return;
@@ -3662,7 +3887,7 @@ async function handleImportBackupFile(e) {
     renderParentEducationTab();
     syncParentSystemControls();
     updateBadges();
-    cloudSync?.schedulePush(500);
+    scheduleAllCloudPushes(500);
     showToast('백업 파일에서 모든 가족 설정과 학습 기록을 복원했어요!', 3800);
   } catch (err) {
     showToast(`백업 불러오기 실패: ${err.message}`, 4000);
@@ -3670,27 +3895,44 @@ async function handleImportBackupFile(e) {
 }
 
 // ==================== INIT ====================
-function init() {
+async function init() {
   const syncedFromLink = tryApplySyncFromUrlHash();
+  const fbCfg = loadFirebaseSyncConfig();
   restoreSettings();
   bindEvents();
   switchView('kidhome');
+  firebaseSync.emitCurrentStatus();
   cloudSync.emitCurrentStatus();
 
   const ghCfg = loadGitHubSyncConfig();
   if (ghCfg.enabled) {
-    cloudSync.syncNow({ pushIfChanged: true, silent: true }).then((res) => {
-      if (res?.ok && res.changedLocally && !syncedFromLink) {
+    try {
+      const ghRes = await cloudSync.syncNow({ pushIfChanged: true, silent: true });
+      if (ghRes?.ok && ghRes.changedLocally && !syncedFromLink && !fbCfg.enabled) {
         showToast('GitHub 비공개 저장소에서 최신 가족 설정을 불러왔어요!', 3200);
+      }
+    } catch {
+      // ignore silent sync error
+    }
+  }
+
+  if (fbCfg.enabled) {
+    firebaseSync.syncNow({ pushIfChanged: true, silent: true }).then((res) => {
+      if (res?.ok && fbCfg.source === 'link') {
+        showToast('⚡ 가족 기기 연결 완료! 이제 KidQuest처럼 자동 동기화됩니다.', 4200);
+      } else if (res?.ok && res.changedLocally && !syncedFromLink) {
+        showToast('⚡ 가족 클라우드에서 최신 설정·학습 기록을 불러왔어요!', 3200);
       }
     });
   }
 
   if (syncedFromLink) {
     showToast(
-      ghCfg.enabled
-        ? '기기 연결 완료! 이제 GitHub 비공개 저장소와 자동 동기화됩니다.'
-        : '다른 기기의 가족 설정(자녀 프로필·교재·API 키)을 모두 불러왔어요!',
+      fbCfg.enabled
+        ? '기기 연결 완료! 이제 가족 클라우드와 실시간 자동 동기화됩니다.'
+        : ghCfg.enabled
+          ? '기기 연결 완료! 이제 GitHub 비공개 저장소와 자동 동기화됩니다.'
+          : '다른 기기의 가족 설정(자녀 프로필·교재·API 키)을 모두 불러왔어요!',
       4500
     );
   }
