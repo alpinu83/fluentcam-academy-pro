@@ -153,21 +153,32 @@ export async function generateStudyReport({
   topicLabel,
   levelLabel,
   durationSec,
+  speakingStats = null,
 }) {
   const dialogue = formatTranscriptForPrompt(transcript, 120);
   const mins = Math.max(1, Math.round(durationSec / 60));
+  const metricsBlock =
+    speakingStats && speakingStats.studentTurns > 0
+      ? `\nObjective Speaking Fluency Metrics (measured from transcript):
+- Student speaking turns: ${speakingStats.studentTurns}
+- Average words per turn: ${speakingStats.avgWordsPerTurn} words
+- Full-sentence rate (5+ words): ${speakingStats.fullSentenceRate}%
+- Turns using connectors (because/so/when/but): ${speakingStats.connectorTurns}
+- Questions asked by student: ${speakingStats.questionTurns}
+- Longest utterance: "${speakingStats.longestUtterance}"`
+      : '';
 
-  const prompt = `You are a warm, expert English education coach writing a post-lesson report in Korean for BOTH the elementary student ("${studentName}") and their parents.
+  const prompt = `You are a warm, expert English speaking coach writing a post-lesson diagnostic report in Korean for BOTH the elementary student ("${studentName}") and their parents.
 Session metadata:
 - Student: ${studentName} (${levelLabel})
 - Tutor: ${tutor.name} (${tutor.accentLabel})
 - Lesson / Textbook: ${topicLabel}
-- Call Duration: approx. ${mins} min
+- Call Duration: approx. ${mins} min${metricsBlock}
 
 Conversation transcript:
 ${dialogue}
 
-Analyze the student's spoken English thoughtfully (praising strengths warmly while giving clear, practical phrasing upgrades and vocabulary to review).
+Analyze the student's spoken English thoughtfully—focusing on concrete conversational growth (sentence length, grammar accuracy, linking ideas, and asking questions).
 Return strictly valid JSON with this exact structure:
 {
   "headline": "아이에게 칭찬과 성취감을 주는 오늘의 수업 한 줄 요약 (한국어)",
@@ -179,6 +190,14 @@ Return strictly valid JSON with this exact structure:
     "vocabulary": 76,
     "engagement": 88
   },
+  "speakingWins": [
+    "오늘 대화에서 실제로 잘해낸 구체적인 말하기 포인트 1 (한국어)",
+    "오늘 대화에서 실제로 잘해낸 구체적인 말하기 포인트 2 (한국어)"
+  ],
+  "recurringHabits": [
+    "다음 수업 AI 선생님이 자동으로 기억하고 집중 보완할 습관 1 (예: 과거 일을 말할 때 동사를 현재형으로 쓰는 습관 → went/ate 집중 연습)",
+    "다음 수업 AI 선생님이 자동으로 기억하고 집중 보완할 습관 2 (예: 이유 말할 때 because 붙여 2문장으로 늘리기)"
+  ],
   "corrections": [
     {
       "original": "아이가 실제로 말한 영어 문장",
@@ -199,6 +218,7 @@ Return strictly valid JSON with this exact structure:
 
 Rules:
 - Provide 3 to 5 concrete corrections from the student's actual utterances (or upgrade simple sentences into richer native ones if they made few errors).
+- Provide 1 to 2 actionable, concrete items in "recurringHabits" that will be fed directly to the AI tutor in the next lesson.
 - Provide 4 to 6 key vocabulary/phrases.
 - Scores should be encouraging yet realistic integers between 60 and 98.`;
 
@@ -207,6 +227,7 @@ Rules:
 
 export function reportToMarkdown(session) {
   const r = session.report;
+  const st = session.speakingStats;
   const dateStr = new Date(session.createdAt).toLocaleString('ko-KR');
   const lines = [
     `# AI 화상영어 수업 노트 — ${session.topicLabel}`,
@@ -218,9 +239,27 @@ export function reportToMarkdown(session) {
     '',
   ];
 
+  if (st && st.studentTurns > 0) {
+    lines.push(
+      '## 실전 말하기 지표 (객관적 발화 분석)',
+      `- 평균 문장 길이: **${st.avgWordsPerTurn}단어/턴** (총 ${st.studentTurns}회 발화 · ${st.totalWords}단어)`,
+      `- 완전한 문장 비율 (5단어+): **${st.fullSentenceRate}%**`,
+      `- 연결어(because/so/when 등) 활용: **${st.connectorTurns}회**`,
+      `- 아이가 영어로 질문한 횟수: **${st.questionTurns}회**`,
+      ...(st.longestUtterance ? [`- 오늘의 최장 영어 문장: *"${st.longestUtterance}"*`] : []),
+      ''
+    );
+  }
+
   if (r) {
     if (r.praiseBadge) lines.push(`> **오늘의 칭찬 배지**: ${r.praiseBadge}`, '');
     lines.push(`## 총평: ${r.headline || ''}`, '', r.summary || '', '');
+
+    if (Array.isArray(r.recurringHabits) && r.recurringHabits.length > 0) {
+      lines.push('## 다음 수업 AI 자동 집중 보완 포인트', '');
+      r.recurringHabits.forEach((h) => lines.push(`- ${h}`));
+      lines.push('');
+    }
 
     if (r.scores) {
       lines.push(

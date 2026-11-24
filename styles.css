@@ -770,11 +770,67 @@ html, body {
   50% { opacity: 0.35; transform: scale(0.8); }
 }
 
+/* ==================== SPEAKING COACH MEMORY & DIAGNOSTICS ==================== */
+.memory-preview-box {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(155, 224, 184, 0.06);
+  border: 1px solid rgba(155, 224, 184, 0.22);
+}
+.memory-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.memory-preview-head strong { font-size: 0.84rem; color: #b9f3cf; }
+.memory-preview-body { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.55; }
+.memory-preview-body ul { margin: 4px 0 0; padding-left: 18px; }
+.memory-preview-body li { margin: 2px 0; }
+
+.speaking-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.speaking-kpi-tile {
+  padding: 12px 13px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-hairline);
+}
+.speaking-kpi-tile span { display: block; font-size: 0.75rem; color: var(--text-secondary); }
+.speaking-kpi-tile strong { display: block; margin-top: 4px; font-size: 1.18rem; color: var(--text-primary); }
+.speaking-kpi-tile small { display: block; margin-top: 2px; font-size: 0.72rem; color: var(--text-muted); }
+
+.longest-utterance-box {
+  margin-top: 12px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  background: rgba(250, 204, 21, 0.07);
+  border: 1px solid rgba(250, 204, 21, 0.24);
+}
+.longest-utterance-box span { display: block; font-size: 0.76rem; color: #fde68a; margin-bottom: 4px; }
+.longest-utterance-box strong { display: block; font-size: 0.94rem; color: var(--text-primary); line-height: 1.45; }
+
+.recurring-habits-box {
+  margin-top: 12px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  background: rgba(155, 224, 184, 0.07);
+  border: 1px solid rgba(155, 224, 184, 0.24);
+}
+.recurring-habits-box strong { display: block; font-size: 0.82rem; color: #b9f3cf; margin-bottom: 6px; }
+.recurring-habits-box ul { margin: 0; padding-left: 18px; font-size: 0.84rem; color: var(--text-primary); line-height: 1.55; }
+
 /* ==================== RESPONSIVE ==================== */
 @media (max-width: 1080px) {
   .parent-edu-grid, .report-summary-grid, .review-layout, .dash-grid, .lt-result-grid { grid-template-columns: 1fr; }
   .textbook-grid.three-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .kpi-strip.four { grid-template-columns: repeat(2, 1fr); }
+  .kpi-strip.four, .speaking-kpi-grid { grid-template-columns: repeat(2, 1fr); }
   .call-sidebar { position: fixed; top: 0; right: 0; bottom: 0; z-index: 25; width: min(440px, 94vw); box-shadow: -12px 0 36px rgba(0,0,0,0.55); }
   .subtitle-overlay { width: calc(100% - 36px); bottom: 124px; }
   .user-pip-tile { width: 146px; right: 12px; bottom: 12px; }
@@ -784,6 +840,6 @@ html, body {
   .top-header { padding: 10px 14px; flex-wrap: wrap; }
   .brand-sub { display: none; }
   .kid-home-view, .subpage-view { padding: 18px 14px 36px; }
-  .kid-profile-grid, .tutor-grid, .textbook-grid, .textbook-grid.three-col, .level-grid, .correction-grid, .vocab-grid, .book-debate-grid, .kpi-strip, .ai-book-gen-form { grid-template-columns: 1fr; }
+  .kid-profile-grid, .tutor-grid, .textbook-grid, .textbook-grid.three-col, .level-grid, .correction-grid, .vocab-grid, .book-debate-grid, .kpi-strip, .speaking-kpi-grid, .ai-book-gen-form { grid-template-columns: 1fr; }
   .fsrs-rating-grid { grid-template-columns: repeat(2, 1fr); }
 }

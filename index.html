@@ -16,7 +16,7 @@
     }
   }
   </script>
-  <link rel="stylesheet" href="styles.css?v=20261124a" />
+  <link rel="stylesheet" href="styles.css?v=20261124b" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -192,6 +192,38 @@
                   <strong>꼼꼼한 문장 교정</strong>
                   <span>시제·전치사·어순 바로 보완하고 완전 문장 연습</span>
                 </button>
+              </div>
+            </div>
+
+            <div class="config-block" style="margin-top: 16px;">
+              <span class="config-title">대화 훈련 집중 모드 (자녀별 맞춤 스피킹 코칭)</span>
+              <div id="speakingFocusCards" class="level-grid" role="radiogroup">
+                <button type="button" class="choice-card active" data-speaking-focus="balanced">
+                  <strong>🎯 균형 회화 코칭 (권장)</strong>
+                  <span>완전 문장 확장 · 1가지 보완 · 꼬리 질문 · 영어로 질문하기</span>
+                </button>
+                <button type="button" class="choice-card" data-speaking-focus="sentence_builder">
+                  <strong>🧱 긴 문장 · 이유 말하기 집중</strong>
+                  <span>단답 탈출 · because/so/when 붙여 2문장 이어 말하기</span>
+                </button>
+                <button type="button" class="choice-card" data-speaking-focus="recast_drill">
+                  <strong>🔁 약점 보완 · 패턴 체화 드릴</strong>
+                  <span>틀린 표현 교정 → 따라 말하기 → 새 질문에 바로 응용</span>
+                </button>
+                <button type="button" class="choice-card" data-speaking-focus="debate_story">
+                  <strong>💬 스토리텔링 · 논리 설득 훈련</strong>
+                  <span>초6 추천 · 기승전결 말하기 &amp; 의견+이유 2가지+반론 대응</span>
+                </button>
+              </div>
+            </div>
+
+            <div id="parentMemoryBox" class="memory-preview-box" style="margin-top: 16px;">
+              <div class="memory-preview-head">
+                <strong>🧠 다음 수업 AI 선생님 자동 기억 (누적 코칭 연계)</strong>
+                <span id="parentMemoryBadge" class="status-text">첫 수업 준비 중</span>
+              </div>
+              <div id="parentMemoryBody" class="memory-preview-body">
+                수업을 1회 이상 완료하면 아이의 약점 습관·평균 문장 길이·복습 표현을 AI 선생님이 자동으로 기억해 다음 수업 워밍업에 반영합니다.
               </div>
             </div>
 
@@ -913,6 +945,22 @@
           </div>
         </section>
 
+        <section id="reportSpeakingMetricsCard" class="surface-card report-section hidden">
+          <div class="card-header-row">
+            <h2 class="section-label">🎯 실전 대화 능력 진단 (객관적 발화 분석 · 다음 수업 자동 연계)</h2>
+            <span id="reportSpeakingSub" class="status-text"></span>
+          </div>
+          <div id="reportSpeakingKpis" class="speaking-kpi-grid"></div>
+          <div id="reportLongestBox" class="longest-utterance-box hidden">
+            <span>🏆 오늘 아이가 말한 가장 멋진 긴 문장</span>
+            <strong id="reportLongestText"></strong>
+          </div>
+          <div id="reportHabitsBox" class="recurring-habits-box hidden">
+            <strong>🧠 다음 수업 AI 선생님이 자동 기억하고 보완할 포인트</strong>
+            <ul id="reportHabitsList"></ul>
+          </div>
+        </section>
+
         <section class="surface-card report-section">
           <div class="card-header-row">
             <h2 class="section-label">표현 업그레이드 (내가 한 말 → 원어민 표현)</h2>
@@ -998,6 +1046,6 @@
     <canvas id="captureCanvas" class="hidden"></canvas>
   </div>
 
-  <script type="module" src="js/app.js?v=20261124a"></script>
+  <script type="module" src="js/app.js?v=20261124b"></script>
 </body>
 </html>

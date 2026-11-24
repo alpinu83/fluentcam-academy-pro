@@ -5,25 +5,31 @@ import {
   LEVELS,
   CORRECTION_MODES,
   buildSystemInstruction,
-} from './tutors.js?v=20261124a';
+} from './tutors.js?v=20261124b';
+import {
+  SPEAKING_FOCUS_MODES,
+  analyzeConversationSpeaking,
+  buildLearnerMemory,
+  buildMidCallCoachFeedback,
+} from './speaking-coach.js?v=20261124b';
 import {
   getAllTextbooks,
   loadCustomAiTextbooks,
   loadDeletedAiBookIds,
   saveCustomAiTextbook,
   deleteCustomAiTextbook,
-} from './textbooks.js?v=20261124a';
+} from './textbooks.js?v=20261124b';
 import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js?v=20261124a';
 import { Avatar3DController } from './avatar-3d.js';
 import { buildClassroomToolDeclarations, playRewardChime } from './classroom-tools.js';
 import { ClassroomWhiteboard } from './whiteboard.js';
 import { loadFsrsDeck, ingestLessonIntoFsrsDeck } from './fsrs.js';
-import { createAcademyPages } from './academy-pages.js?v=20261124a';
+import { createAcademyPages } from './academy-pages.js?v=20261124b';
 import {
   generateAiTextbook,
   generateStudyReport,
   reportToMarkdown,
-} from './feedback.js';
+} from './feedback.js?v=20261124b';
 import {
   DEFAULT_SYNC_REPO,
   cleanGitHubToken,
@@ -77,6 +83,7 @@ const defaultProfiles = {
     name: '초3 학생',
     levelKey: 'elem3_mid',
     correctionKey: 'gentle',
+    speakingFocus: 'balanced',
     subtitleMode: 'hidden',
     speakingPace: 'slow',
     tutorId: 'maya',
@@ -91,6 +98,7 @@ const defaultProfiles = {
     name: '초6 학생',
     levelKey: 'elem6_high',
     correctionKey: 'gentle',
+    speakingFocus: 'balanced',
     subtitleMode: 'hidden',
     speakingPace: 'normal',
     tutorId: 'oliver',
@@ -115,6 +123,7 @@ const state = {
   selectedTutorId: 'maya',
   levelKey: 'elem3_mid',
   correctionKey: 'gentle',
+  speakingFocus: 'balanced',
   subtitleMode: 'hidden', // 'hidden' | 'blur' | 'visible' (Parent-locked)
   speakingPace: 'slow', // 'slow' | 'normal' | 'fast'
   bookFilter: 'all',
@@ -281,6 +290,9 @@ const el = {
   quickLevelTestBtn: document.getElementById('quickLevelTestBtn'),
   levelPills: document.getElementById('levelPills'),
   correctionCards: document.getElementById('correctionCards'),
+  speakingFocusCards: document.getElementById('speakingFocusCards'),
+  parentMemoryBadge: document.getElementById('parentMemoryBadge'),
+  parentMemoryBody: document.getElementById('parentMemoryBody'),
   subtitleSettingCards: document.getElementById('subtitleSettingCards'),
   paceSettingCards: document.getElementById('paceSettingCards'),
 
@@ -395,6 +407,13 @@ const el = {
   reportSummaryText: document.getElementById('reportSummaryText'),
   reportNextTopicText: document.getElementById('reportNextTopicText'),
   reportScoresList: document.getElementById('reportScoresList'),
+  reportSpeakingMetricsCard: document.getElementById('reportSpeakingMetricsCard'),
+  reportSpeakingSub: document.getElementById('reportSpeakingSub'),
+  reportSpeakingKpis: document.getElementById('reportSpeakingKpis'),
+  reportLongestBox: document.getElementById('reportLongestBox'),
+  reportLongestText: document.getElementById('reportLongestText'),
+  reportHabitsBox: document.getElementById('reportHabitsBox'),
+  reportHabitsList: document.getElementById('reportHabitsList'),
   correctionsCount: document.getElementById('correctionsCount'),
   reportCorrectionsList: document.getElementById('reportCorrectionsList'),
   reportVocabGrid: document.getElementById('reportVocabGrid'),
@@ -575,6 +594,7 @@ function syncCurrentProfileFields() {
   const p = getProfile();
   p.levelKey = state.levelKey;
   p.correctionKey = state.correctionKey;
+  p.speakingFocus = state.speakingFocus;
   p.subtitleMode = state.subtitleMode;
   p.speakingPace = state.speakingPace;
   p.tutorId = state.selectedTutorId;
@@ -590,6 +610,7 @@ function applyActiveProfileToState() {
   const allBooks = getAllTextbooks();
   state.levelKey = LEVELS[p.levelKey] ? p.levelKey : 'elem3_mid';
   state.correctionKey = CORRECTION_MODES[p.correctionKey] ? p.correctionKey : 'gentle';
+  state.speakingFocus = SPEAKING_FOCUS_MODES[p.speakingFocus] ? p.speakingFocus : 'balanced';
   state.subtitleMode = ['hidden', 'blur', 'visible'].includes(p.subtitleMode) ? p.subtitleMode : 'hidden';
   state.speakingPace = SPEAKING_PACES[p.speakingPace]
     ? p.speakingPace
@@ -1132,6 +1153,46 @@ function renderTutors() {
   });
 }
 
+function renderParentMemoryPreview() {
+  if (!el.parentMemoryBadge || !el.parentMemoryBody) return;
+  const mem = buildLearnerMemory({
+    studentId: state.activeStudentId,
+    history: loadHistory(),
+    fsrsDeck: loadFsrsDeck(),
+  });
+
+  if (!mem.hasHistory && mem.reviewPhrases.length === 0) {
+    el.parentMemoryBadge.textContent = '첫 수업 준비 중';
+    el.parentMemoryBody.textContent =
+      '수업을 1회 이상 완료하면 아이의 약점 습관·평균 문장 길이·복습 표현을 AI 선생님이 자동으로 기억해 다음 수업 워밍업에 반영합니다.';
+    return;
+  }
+
+  const avgNote = mem.lastAvgWords ? ` · 직전 평균 ${mem.lastAvgWords}단어/턴` : '';
+  el.parentMemoryBadge.textContent = mem.hasHistory
+    ? `누적 ${mem.sessionCount}회 수업 연계${avgNote}`
+    : `FSRS 복습 표현 ${mem.reviewPhrases.length}개 연계`;
+
+  const items = [];
+  if (mem.lastTopic) {
+    items.push(`<li><strong>직전 수업:</strong> ${escapeHtml(mem.lastTopic)}</li>`);
+  }
+  if (mem.recurringHabits.length > 0) {
+    items.push(
+      `<li><strong>집중 보완 습관:</strong> ${mem.recurringHabits.map((h) => escapeHtml(h)).join(' / ')}</li>`
+    );
+  } else if (mem.recentUpgrades.length > 0) {
+    items.push(
+      `<li><strong>지난 교정 재훈련:</strong> "${escapeHtml(mem.recentUpgrades[0].improved)}"</li>`
+    );
+  }
+  if (mem.reviewPhrases.length > 0) {
+    const phraseList = mem.reviewPhrases.map((p) => `"${escapeHtml(p.front)}"`).join(', ');
+    items.push(`<li><strong>워밍업 자동 복습 표현:</strong> ${phraseList}</li>`);
+  }
+  el.parentMemoryBody.innerHTML = `<ul>${items.join('')}</ul>`;
+}
+
 function renderParentEducationTab() {
   renderStudentPresets();
   el.levelPills.querySelectorAll('.level-card').forEach((btn) => {
@@ -1139,6 +1200,9 @@ function renderParentEducationTab() {
   });
   el.correctionCards.querySelectorAll('.choice-card').forEach((card) => {
     card.classList.toggle('active', card.dataset.correction === state.correctionKey);
+  });
+  el.speakingFocusCards?.querySelectorAll('.choice-card').forEach((card) => {
+    card.classList.toggle('active', card.dataset.speakingFocus === state.speakingFocus);
   });
   el.subtitleSettingCards.querySelectorAll('.choice-card').forEach((card) => {
     card.classList.toggle('active', card.dataset.subtitleMode === state.subtitleMode);
@@ -1153,6 +1217,7 @@ function renderParentEducationTab() {
   el.customBookContentInput.value = state.customBookContent;
   el.customTopicInput.value = state.customTopic;
 
+  renderParentMemoryPreview();
   renderTextbooks();
   renderTutors();
   updateBadges();
@@ -1360,6 +1425,7 @@ function updateCallPaceUI(paceKey) {
 async function handleGeminiToolCall(fnCall) {
   const name = fnCall.name;
   const args = fnCall.args || {};
+  const liveCoachingSnapshot = buildMidCallCoachFeedback(state.transcript);
 
   if (name === 'turn_textbook_page') {
     const book = state.activeCallTextbook;
@@ -1368,28 +1434,33 @@ async function handleGeminiToolCall(fnCall) {
     state.activeCallPageIdx = targetIdx;
     renderActiveCallBookPage({ notifyTutor: false });
     showToast(`선생님이 교재를 ${targetIdx + 1}쪽으로 넘겼어요!`);
-    return { ok: true, currentPage: targetIdx + 1, heading: book.pages[targetIdx].heading };
+    return {
+      ok: true,
+      currentPage: targetIdx + 1,
+      heading: book.pages[targetIdx].heading,
+      liveCoachingSnapshot,
+    };
   }
 
   if (name === 'award_gold_star') {
     triggerGoldStar(args.reason || '정말 잘했어요!');
-    return { ok: true, totalSessionStars: state.sessionStarsEarned };
+    return { ok: true, totalSessionStars: state.sessionStarsEarned, liveCoachingSnapshot };
   }
 
   if (name === 'write_on_whiteboard') {
     showChalkboardNote(args.englishSentence || '', args.koreanTip || '');
-    return { ok: true, displayed: true };
+    return { ok: true, displayed: true, liveCoachingSnapshot };
   }
 
   if (name === 'show_pop_quiz') {
     showPopQuiz(args);
-    return { ok: true, quizDisplayed: true };
+    return { ok: true, quizDisplayed: true, liveCoachingSnapshot };
   }
 
   if (name === 'set_tutor_expression') {
     if (args.mood) state.avatar3d?.setMood(args.mood);
     if (args.gesture && args.gesture !== 'none') state.avatar3d?.playGesture(args.gesture, 2.5);
-    return { ok: true };
+    return { ok: true, liveCoachingSnapshot };
   }
 
   if (name === 'adjust_speaking_pace') {
@@ -1399,10 +1470,10 @@ async function handleGeminiToolCall(fnCall) {
       args.reason || `선생님이 말하는 속도를 [${SPEAKING_PACES[nextPace].label}]로 자동 조절했어요!`,
       3400
     );
-    return { ok: true, activePace: nextPace };
+    return { ok: true, activePace: nextPace, liveCoachingSnapshot };
   }
 
-  return { ok: true };
+  return { ok: true, liveCoachingSnapshot };
 }
 
 // ==================== DEVICE PREVIEW (IN PARENT SYSTEM TAB) ====================
@@ -1743,16 +1814,25 @@ async function startCall() {
     });
     await state.audioPlayer.init(externalAudioTarget);
 
+    // Build Cross-Session Learner Memory from past reports & due FSRS phrases
+    const learnerMemory = buildLearnerMemory({
+      studentId: state.activeStudentId,
+      history: loadHistory(),
+      fsrsDeck: loadFsrsDeck(),
+    });
+
     // Connect Gemini Live WebSocket
     const systemInstruction = buildSystemInstruction({
       tutor,
       studentName,
       levelKey: state.levelKey,
       correctionKey: state.correctionKey,
+      speakingFocus: state.speakingFocus,
       speakingPace: state.speakingPace,
       textbook,
       activePageIdx: 0,
       customTopic: state.customTopic,
+      learnerMemoryBlock: learnerMemory.promptBlock,
     });
 
     state.liveClient = new GeminiLiveClient({
@@ -1878,9 +1958,13 @@ async function startCall() {
       if (firstFrame) state.liveClient?.sendVideoFrameBase64(firstFrame);
       state.avatar3d?.playGesture('handup', 2.0);
 
+      const memoryHint =
+        learnerMemory.hasHistory && learnerMemory.reviewPhrases.length > 0
+          ? ' Start with a warm welcome back and a quick 1-question warm-up before diving in!'
+          : '';
       const openingCue = textbook
-        ? `Hi ${tutor.name}! My name is ${studentName}. I have "${textbook.title}" open to Page 1. Greet me warmly in 1-2 short sentences and ask ONE easy opening question from Page 1!`
-        : `Hi ${tutor.name}! My name is ${studentName}. Greet me warmly in 1-2 short sentences and ask ONE fun question to get me speaking English!`;
+        ? `Hi ${tutor.name}! My name is ${studentName}. I have "${textbook.title}" open to Page 1.${memoryHint} Greet me warmly in 1-2 short sentences and ask ONE easy opening question!`
+        : `Hi ${tutor.name}! My name is ${studentName}.${memoryHint} Greet me warmly in 1-2 short sentences and ask ONE fun question to get me speaking English!`;
       state.liveClient?.sendTextTurn(openingCue);
     }, 450);
   } catch (err) {
@@ -1946,6 +2030,7 @@ async function endCall() {
   const cleanTranscript = state.transcript
     .map((t) => ({ role: t.role, text: (t.text || '').trim() }))
     .filter((t) => t.text.length > 0);
+  const speakingStats = analyzeConversationSpeaking(cleanTranscript);
 
   const tutor = getSelectedTutor();
   const studentName = getStudentDisplayName();
@@ -1979,6 +2064,7 @@ async function endCall() {
       topicLabel,
       levelLabel,
       durationSec,
+      speakingStats,
     });
   } catch (err) {
     console.error('Study report error:', err);
@@ -1988,6 +2074,8 @@ async function endCall() {
       praiseBadge: '오늘도 영어 말하기 완주!',
       summary: 'AI 리포트 생성 중 일시적인 오류가 발생했지만, 전체 대화 스크립트는 안전하게 저장되었습니다.',
       scores: { fluency: 80, naturalness: 78, vocabulary: 76, engagement: 86 },
+      speakingWins: [],
+      recurringHabits: [],
       corrections: [],
       vocabulary: [],
       nextTopic: '같은 교재의 핵심 표현을 3분 복습장에서 한 번 더 따라 말해 보세요.',
@@ -2013,10 +2101,12 @@ async function endCall() {
     accentLabel: tutor.accentLabel,
     topicLabel,
     levelLabel,
+    speakingFocus: state.speakingFocus,
     durationSec,
     durationLabel: formatDuration(durationSec),
     studentTalkPct,
     starsEarned,
+    speakingStats,
     transcript: cleanTranscript,
     report: reportData,
   };
@@ -2169,6 +2259,63 @@ function renderReportView(session) {
       </div>`
     )
     .join('');
+
+  // Objective Speaking Fluency Diagnostics & Next-Lesson Memory Habits
+  const st = session.speakingStats || analyzeConversationSpeaking(session.transcript || []);
+  const habits = Array.isArray(r.recurringHabits) ? r.recurringHabits.filter(Boolean) : [];
+  if (el.reportSpeakingMetricsCard) {
+    const hasMetrics = st && st.studentTurns > 0;
+    if (hasMetrics || habits.length > 0) {
+      el.reportSpeakingMetricsCard.classList.remove('hidden');
+      el.reportSpeakingSub.textContent = hasMetrics
+        ? `학생 발화 ${st.studentTurns}회 · 총 ${st.totalWords}단어 분석`
+        : '다음 수업 자동 기억 항목';
+
+      if (hasMetrics) {
+        const focusLabel = SPEAKING_FOCUS_MODES[session.speakingFocus]?.shortLabel || '균형 회화';
+        el.reportSpeakingKpis.innerHTML = `
+          <div class="speaking-kpi-tile">
+            <span>평균 문장 길이</span>
+            <strong>${st.avgWordsPerTurn}단어</strong>
+            <small>권장 목표: 6단어+ / 턴</small>
+          </div>
+          <div class="speaking-kpi-tile">
+            <span>완전한 문장 비율</span>
+            <strong>${st.fullSentenceRate}%</strong>
+            <small>5단어 이상 문장 (${st.fullSentenceTurns}/${st.studentTurns})</small>
+          </div>
+          <div class="speaking-kpi-tile">
+            <span>연결어 확장 활용</span>
+            <strong>${st.connectorTurns}회</strong>
+            <small>because · so · when 등</small>
+          </div>
+          <div class="speaking-kpi-tile">
+            <span>영어로 질문하기</span>
+            <strong>${st.questionTurns}회</strong>
+            <small>훈련 모드: ${escapeHtml(focusLabel)}</small>
+          </div>
+        `;
+      } else {
+        el.reportSpeakingKpis.innerHTML = '';
+      }
+
+      if (hasMetrics && st.longestUtterance) {
+        el.reportLongestBox.classList.remove('hidden');
+        el.reportLongestText.textContent = `"${st.longestUtterance}" (${st.longestWordCount}단어)`;
+      } else {
+        el.reportLongestBox.classList.add('hidden');
+      }
+
+      if (habits.length > 0) {
+        el.reportHabitsBox.classList.remove('hidden');
+        el.reportHabitsList.innerHTML = habits.map((h) => `<li>${escapeHtml(h)}</li>`).join('');
+      } else {
+        el.reportHabitsBox.classList.add('hidden');
+      }
+    } else {
+      el.reportSpeakingMetricsCard.classList.add('hidden');
+    }
+  }
 
   const corrections = Array.isArray(r.corrections) ? r.corrections : [];
   el.correctionsCount.textContent = `${corrections.length}개 제안`;
@@ -2463,6 +2610,16 @@ function bindEvents() {
       state.correctionKey = card.dataset.correction;
       saveSettings();
       renderParentEducationTab();
+    });
+  });
+
+  el.speakingFocusCards?.querySelectorAll('.choice-card').forEach((card) => {
+    card.addEventListener('click', () => {
+      state.speakingFocus = card.dataset.speakingFocus;
+      saveSettings();
+      renderParentEducationTab();
+      const mode = SPEAKING_FOCUS_MODES[state.speakingFocus] || SPEAKING_FOCUS_MODES.balanced;
+      showToast(`${getStudentDisplayName()} 대화 훈련 모드: [${mode.label}]`);
     });
   });
 
