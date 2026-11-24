@@ -1092,7 +1092,7 @@
   <script>
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js?v=20261124f').catch(() => {});
+        navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' }).catch(() => {});
       });
     }
   </script>
