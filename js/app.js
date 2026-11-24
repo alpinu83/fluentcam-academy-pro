@@ -5,20 +5,20 @@ import {
   LEVELS,
   CORRECTION_MODES,
   buildSystemInstruction,
-} from './tutors.js';
+} from './tutors.js?v=20261124a';
 import {
   getAllTextbooks,
   loadCustomAiTextbooks,
   loadDeletedAiBookIds,
   saveCustomAiTextbook,
   deleteCustomAiTextbook,
-} from './textbooks.js';
-import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js';
+} from './textbooks.js?v=20261124a';
+import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js?v=20261124a';
 import { Avatar3DController } from './avatar-3d.js';
 import { buildClassroomToolDeclarations, playRewardChime } from './classroom-tools.js';
 import { ClassroomWhiteboard } from './whiteboard.js';
 import { loadFsrsDeck, ingestLessonIntoFsrsDeck } from './fsrs.js';
-import { createAcademyPages } from './academy-pages.js';
+import { createAcademyPages } from './academy-pages.js?v=20261124a';
 import {
   generateAiTextbook,
   generateStudyReport,
@@ -64,6 +64,12 @@ const NOISE_LABELS = {
   low: '잡음 차단: 약함',
   medium: '잡음 차단: 보통',
   high: '잡음 차단: 강함',
+};
+
+const TURN_WAIT_CONFIG = {
+  normal: { ms: 1500, label: '보통 (1.5초)' },
+  patient: { ms: 2400, label: '넉넉하게 (2.4초)' },
+  extra: { ms: 3400, label: '아주 여유롭게 (3.4초)' },
 };
 
 const defaultProfiles = {
@@ -122,6 +128,7 @@ const state = {
   avatarMode: '3d', // '3d' | 'portrait'
   enableTools: true,
   noiseSensitivity: 'medium', // 'low' | 'medium' | 'high'
+  turnWaitMode: 'patient', // 'normal' (1.5s) | 'patient' (2.4s) | 'extra' (3.4s)
   speechMode: 'auto', // 'auto' | 'ptt'
 
   // Preview modal
@@ -235,6 +242,7 @@ const el = {
   toggleApiKeyVisBtn: document.getElementById('toggleApiKeyVisBtn'),
   avatarModePills: document.getElementById('avatarModePills'),
   noiseGateCards: document.getElementById('noiseGateCards'),
+  turnWaitCards: document.getElementById('turnWaitCards'),
   speechModePills: document.getElementById('speechModePills'),
   liveModelSelect: document.getElementById('liveModelSelect'),
   customLiveModelInput: document.getElementById('customLiveModelInput'),
@@ -616,6 +624,7 @@ function saveSettings({ skipSync = false } = {}) {
       avatarMode: state.avatarMode,
       enableTools: state.enableTools,
       noiseSensitivity: state.noiseSensitivity,
+      turnWaitMode: state.turnWaitMode,
       speechMode: state.speechMode,
       liveModel: state.liveModel,
       customLiveModel: state.customLiveModel,
@@ -662,6 +671,7 @@ function restoreSettings() {
       if (saved.avatarMode === '3d' || saved.avatarMode === 'portrait') state.avatarMode = saved.avatarMode;
       if (typeof saved.enableTools === 'boolean') state.enableTools = saved.enableTools;
       if (['low', 'medium', 'high'].includes(saved.noiseSensitivity)) state.noiseSensitivity = saved.noiseSensitivity;
+      if (['normal', 'patient', 'extra'].includes(saved.turnWaitMode)) state.turnWaitMode = saved.turnWaitMode;
       if (['auto', 'ptt'].includes(saved.speechMode)) state.speechMode = saved.speechMode;
       if (saved.liveModel) state.liveModel = saved.liveModel;
       if (saved.customLiveModel) state.customLiveModel = saved.customLiveModel;
@@ -1159,6 +1169,9 @@ function syncParentSystemControls() {
 
   el.noiseGateCards.querySelectorAll('.choice-card').forEach((c) => {
     c.classList.toggle('active', c.dataset.noise === state.noiseSensitivity);
+  });
+  el.turnWaitCards?.querySelectorAll('.choice-card').forEach((c) => {
+    c.classList.toggle('active', c.dataset.turnWait === state.turnWaitMode);
   });
   el.speechModePills.querySelectorAll('.seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.speechMode === state.speechMode);
@@ -1761,6 +1774,8 @@ async function startCall() {
       },
     });
 
+    const turnWaitCfg = TURN_WAIT_CONFIG[state.turnWaitMode] || TURN_WAIT_CONFIG.patient;
+
     await state.liveClient.connect({
       apiKey,
       model: liveModel,
@@ -1768,12 +1783,13 @@ async function startCall() {
       systemInstruction,
       tools: state.enableTools ? buildClassroomToolDeclarations() : [],
       strictNoiseGuard: state.noiseSensitivity === 'high',
+      silenceDurationMs: turnWaitCfg.ms,
     });
 
-    // Smart Noise-Gate AudioWorklet
+    // Smart Noise-Gate AudioWorklet (with patient mid-sentence pause hold)
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     state.captureAudioCtx = new AudioCtx();
-    await state.captureAudioCtx.audioWorklet.addModule('./js/audio-worklet.js');
+    await state.captureAudioCtx.audioWorklet.addModule('./js/audio-worklet.js?v=20261124a');
 
     const micSource = state.captureAudioCtx.createMediaStreamSource(stream);
     const workletNode = new AudioWorkletNode(state.captureAudioCtx, 'pcm16k-capture-processor');
@@ -1781,6 +1797,7 @@ async function startCall() {
 
     workletNode.port.postMessage({
       sensitivity: state.noiseSensitivity,
+      turnWaitMs: turnWaitCfg.ms,
       pttMode: state.callPttMode,
       pttPressed: false,
       tutorSpeaking: false,
@@ -1791,33 +1808,40 @@ async function startCall() {
       if (!msg) return;
 
       if (msg.type === 'speechEnd') {
-        state.liveClient?.sendAudioStreamEnd();
+        if (msg.reason !== 'tutorStarted') {
+          state.liveClient?.sendAudioStreamEnd();
+        }
         if (!state.callPttMode) {
           el.callNoiseGateBadge.textContent = NOISE_LABELS[state.noiseSensitivity] || '잡음 차단 대기';
-          el.callNoiseGateBadge.classList.remove('active-voice');
+          el.callNoiseGateBadge.classList.remove('active-voice', 'waiting-pause');
         }
         return;
       }
 
       if (typeof msg.rms === 'number') {
         const level = Math.min(1, msg.rms * 6.5);
-        const showRing = !state.micMuted && Boolean(msg.gateOpen) && level > 0.05;
+        const showRing = !state.micMuted && Boolean(msg.gateOpen) && !msg.inPause && level > 0.05;
         el.callMicRing.style.opacity = showRing ? String(Math.min(0.95, level)) : '0';
         el.callMicRing.style.transform = `scale(${0.85 + level * 0.45})`;
 
         if (!state.callPttMode) {
-          if (msg.gateOpen) {
-            el.callNoiseGateBadge.textContent = '🎤 말소리 감지 중';
+          if (msg.gateOpen && msg.inPause) {
+            el.callNoiseGateBadge.textContent = '⏳ 이어서 기다리는 중...';
+            el.callNoiseGateBadge.classList.remove('active-voice');
+            el.callNoiseGateBadge.classList.add('waiting-pause');
+          } else if (msg.gateOpen) {
+            el.callNoiseGateBadge.textContent = '🎤 말소리 듣는 중';
+            el.callNoiseGateBadge.classList.remove('waiting-pause');
             el.callNoiseGateBadge.classList.add('active-voice');
           } else {
             el.callNoiseGateBadge.textContent = NOISE_LABELS[state.noiseSensitivity] || '잡음 차단 대기';
-            el.callNoiseGateBadge.classList.remove('active-voice');
+            el.callNoiseGateBadge.classList.remove('active-voice', 'waiting-pause');
           }
         }
       }
 
       if (msg.type === 'pcm' && msg.buffer && !state.micMuted) {
-        state.studentSpeakingMs += 100;
+        if (!msg.inPause) state.studentSpeakingMs += 100;
         state.liveClient?.sendAudioPcmBuffer(msg.buffer);
       }
     };
@@ -2530,6 +2554,16 @@ function bindEvents() {
       saveSettings();
       syncParentSystemControls();
       showToast(`잡음 차단 강도를 [${NOISE_LABELS[state.noiseSensitivity]}]로 설정했어요.`);
+    });
+  });
+
+  el.turnWaitCards?.querySelectorAll('.choice-card').forEach((card) => {
+    card.addEventListener('click', () => {
+      state.turnWaitMode = card.dataset.turnWait;
+      saveSettings();
+      syncParentSystemControls();
+      const cfg = TURN_WAIT_CONFIG[state.turnWaitMode] || TURN_WAIT_CONFIG.patient;
+      showToast(`아이 대답 기다리는 시간을 [${cfg.label}]로 설정했어요.`);
     });
   });
 

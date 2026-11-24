@@ -1,5 +1,5 @@
-import { getAllTextbooks } from './textbooks.js';
-import { LEVELS, STUDENT_PRESETS } from './tutors.js';
+import { getAllTextbooks } from './textbooks.js?v=20261124a';
+import { LEVELS, STUDENT_PRESETS } from './tutors.js?v=20261124a';
 import { LEVEL_TEST_QUESTIONS, evaluateLevelTest } from './level-test.js';
 import {
   RATING,

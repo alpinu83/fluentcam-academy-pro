@@ -29,6 +29,7 @@ class Pcm16kCaptureProcessor extends AudioWorkletProcessor {
     this.pttPressed = false;
     this.tutorSpeaking = false;
     this.sensitivity = 'medium'; // 'low' | 'medium' | 'high'
+    this.turnWaitMs = 2400; // Wait time before ending child's turn (default: patient 2.4s)
 
     // Voice activity gate state (per 100ms chunk)
     this.noiseFloor = 0.008;
@@ -52,26 +53,41 @@ class Pcm16kCaptureProcessor extends AudioWorkletProcessor {
         const was = this.pttPressed;
         this.pttPressed = d.pttPressed;
         if (was && !this.pttPressed && this.pttMode) {
-          this.port.postMessage({ type: 'speechEnd' });
+          this.port.postMessage({ type: 'speechEnd', reason: 'pttRelease' });
         }
       }
       if (typeof d.tutorSpeaking === 'boolean') {
+        const prev = this.tutorSpeaking;
         this.tutorSpeaking = d.tutorSpeaking;
+        // If tutor just started replying while we were only sitting in trailing pause hangover,
+        // close the gate quietly without firing a stray speechEnd/audioStreamEnd.
+        if (!prev && this.tutorSpeaking && this.gateOpen && this.consecutiveSpeechChunks === 0) {
+          this.gateOpen = false;
+          this.hangoverChunks = 0;
+          this.port.postMessage({ type: 'speechEnd', reason: 'tutorStarted' });
+        }
       }
       if (typeof d.sensitivity === 'string') {
         this.sensitivity = d.sensitivity;
+      }
+      if (typeof d.turnWaitMs === 'number' && Number.isFinite(d.turnWaitMs)) {
+        this.turnWaitMs = Math.max(1000, Math.min(4500, d.turnWaitMs));
       }
     };
   }
 
   _getGateParams() {
+    // Keep the audio gate open slightly past Gemini's silenceDurationMs (+150ms) so
+    // mid-sentence thinking pauses are never cut off by a premature audioStreamEnd.
+    const hangoverMax = Math.max(12, Math.round((this.turnWaitMs + 150) / 100));
+
     if (this.sensitivity === 'low') {
       // Quiet room: gentle filter
       return {
         minRms: 0.015,
         floorMult: 2.2,
         onsetChunks: 1,
-        hangoverMax: 9, // 900ms
+        hangoverMax,
         echoMult: 1.8,
         blockWhileTutorSpeaks: false,
       };
@@ -82,7 +98,7 @@ class Pcm16kCaptureProcessor extends AudioWorkletProcessor {
         minRms: 0.036,
         floorMult: 3.4,
         onsetChunks: 2, // requires >= 200ms sustained speech (blocks clicks/taps/coughs)
-        hangoverMax: 8,
+        hangoverMax,
         echoMult: 3.2,
         blockWhileTutorSpeaks: true,
       };
@@ -92,7 +108,7 @@ class Pcm16kCaptureProcessor extends AudioWorkletProcessor {
       minRms: 0.024,
       floorMult: 2.7,
       onsetChunks: 2, // filters brief transient clicks/keyboard taps
-      hangoverMax: 9,
+      hangoverMax,
       echoMult: 2.6,
       blockWhileTutorSpeaks: false,
     };
@@ -119,7 +135,7 @@ class Pcm16kCaptureProcessor extends AudioWorkletProcessor {
       this.gateOpen = false;
       this.hangoverChunks = 0;
       this.consecutiveSpeechChunks = 0;
-      this.port.postMessage({ type: 'level', rms: 0, gateOpen: false });
+      this.port.postMessage({ type: 'level', rms: 0, gateOpen: false, inPause: false });
       return;
     }
 
@@ -129,20 +145,20 @@ class Pcm16kCaptureProcessor extends AudioWorkletProcessor {
         this.wasPttTransmitting = true;
         const copy = int16Chunk.slice(0);
         this.port.postMessage(
-          { type: 'pcm', buffer: copy.buffer, rms, gateOpen: true },
+          { type: 'pcm', buffer: copy.buffer, rms, gateOpen: true, inPause: false },
           [copy.buffer]
         );
       } else {
         if (this.wasPttTransmitting) {
           this.wasPttTransmitting = false;
-          this.port.postMessage({ type: 'speechEnd' });
+          this.port.postMessage({ type: 'speechEnd', reason: 'pttRelease' });
         }
-        this.port.postMessage({ type: 'level', rms, gateOpen: false });
+        this.port.postMessage({ type: 'level', rms, gateOpen: false, inPause: false });
       }
       return;
     }
 
-    // Mode 2: Smart Adaptive Voice-Band Noise Gate
+    // Mode 2: Smart Adaptive Voice-Band Noise Gate with Patient Pause Hold
     const params = this._getGateParams();
 
     // If strict echo guard is on and AI tutor is actively speaking, hold mic cleanly
@@ -151,14 +167,17 @@ class Pcm16kCaptureProcessor extends AudioWorkletProcessor {
       if (this.gateOpen) {
         this.gateOpen = false;
         this.hangoverChunks = 0;
-        this.port.postMessage({ type: 'speechEnd' });
+        this.port.postMessage({ type: 'speechEnd', reason: 'tutorStarted' });
       }
-      this.port.postMessage({ type: 'level', rms: 0, gateOpen: false });
+      this.port.postMessage({ type: 'level', rms: 0, gateOpen: false, inPause: false });
       return;
     }
 
     const baseThreshold = Math.max(params.minRms, this.noiseFloor * params.floorMult);
-    const activeThreshold = this.tutorSpeaking ? baseThreshold * params.echoMult : baseThreshold;
+    // Hysteresis: once the child has already started speaking, allow slightly softer
+    // mid-sentence words/hesitations without prematurely counting down the silence timer.
+    const holdThreshold = this.gateOpen && !this.tutorSpeaking ? baseThreshold * 0.72 : baseThreshold;
+    const activeThreshold = this.tutorSpeaking ? baseThreshold * params.echoMult : holdThreshold;
     const isVoiceLikeZcr = zcr >= 0.015 && zcr <= 0.42;
     const looksLikeSpeech = rms >= activeThreshold && isVoiceLikeZcr;
 
@@ -184,31 +203,35 @@ class Pcm16kCaptureProcessor extends AudioWorkletProcessor {
         // Flush pre-speech ring buffer immediately
         for (const pre of this.preSpeechRing) {
           this.port.postMessage(
-            { type: 'pcm', buffer: pre.buffer, rms, gateOpen: true },
+            { type: 'pcm', buffer: pre.buffer, rms, gateOpen: true, inPause: false },
             [pre.buffer]
           );
         }
         this.preSpeechRing = [];
       } else {
         // Gate closed: do NOT send ambient room noise to Gemini!
-        this.port.postMessage({ type: 'level', rms, gateOpen: false });
+        this.port.postMessage({ type: 'level', rms, gateOpen: false, inPause: false });
       }
       return;
     }
 
-    // Gate is currently open: stream speech + hangover tail
+    // Gate is currently open: stream speech + patient mid-sentence pause window
+    const inPause = !looksLikeSpeech;
     const copy = int16Chunk.slice(0);
     this.port.postMessage(
-      { type: 'pcm', buffer: copy.buffer, rms, gateOpen: true },
+      { type: 'pcm', buffer: copy.buffer, rms, gateOpen: true, inPause },
       [copy.buffer]
     );
 
-    if (!looksLikeSpeech) {
+    if (inPause) {
       this.hangoverChunks--;
       if (this.hangoverChunks <= 0) {
         this.gateOpen = false;
         this.consecutiveSpeechChunks = 0;
-        this.port.postMessage({ type: 'speechEnd' });
+        this.port.postMessage({
+          type: 'speechEnd',
+          reason: this.tutorSpeaking ? 'tutorStarted' : 'silence',
+        });
       }
     }
   }

@@ -1084,7 +1084,8 @@ Guide the student warmly through this material: read key parts together, check u
   return `\n[Active Interactive Lesson Textbook]
 Book: "${textbook.title}" (${textbook.gradeTag}, ${textbook.levelRange})
 The student can see this exact textbook on their screen right next to your video.
-Start on Page ${activePageIdx + 1}, pace the lesson for an engaging ~20-minute speaking class, and use turn_textbook_page when moving to the next page!
+Start on Page ${activePageIdx + 1} and pace the lesson for an engaging ~20-minute speaking class.
+Do NOT rush to turn_textbook_page after one short answer—stay on each page for at least 3 to 5 student speaking turns, coach any errors or unfinished sentences first, and ask follow-up questions so the student truly practices the vocabulary and patterns aloud before advancing!
 
 Full Textbook Outline:
 ${pageSummaries}`;

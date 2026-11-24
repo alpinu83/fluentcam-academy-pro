@@ -16,7 +16,7 @@
     }
   }
   </script>
-  <link rel="stylesheet" href="styles.css?v=20261123c" />
+  <link rel="stylesheet" href="styles.css?v=20261124a" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -182,15 +182,15 @@
               <div id="correctionCards" class="correction-grid" role="radiogroup">
                 <button type="button" class="choice-card" data-correction="flow">
                   <strong>자신감 프리토킹</strong>
-                  <span>단답 확장 유도 · 끝나고 교정</span>
+                  <span>끊긴 문장 완성 돕고 질문으로 확장 유도</span>
                 </button>
                 <button type="button" class="choice-card active" data-correction="gentle">
-                  <strong>부드러운 따라 말하기</strong>
-                  <span>칭찬 먼저 · 칠판에 1줄 제안</span>
+                  <strong>부드러운 코칭 &amp; 보완 (권장)</strong>
+                  <span>부족한 1가지 칠판 보완 → 따라 말한 뒤 다음으로</span>
                 </button>
                 <button type="button" class="choice-card" data-correction="strict">
                   <strong>꼼꼼한 문장 교정</strong>
-                  <span>시제·전치사 바로 짚고 따라 말하기</span>
+                  <span>시제·전치사·어순 바로 보완하고 완전 문장 연습</span>
                 </button>
               </div>
             </div>
@@ -392,6 +392,25 @@
                   <span>강력 필터 + 선생님 발화 중 에코 차단</span>
                 </button>
               </div>
+            </div>
+
+            <div class="config-block">
+              <span class="config-title">아이 대답 기다리는 시간 (말하다 멈춰도 끊지 않고 대기)</span>
+              <div id="turnWaitCards" class="correction-grid" role="radiogroup">
+                <button type="button" class="choice-card" data-turn-wait="normal">
+                  <strong>보통 (1.5초)</strong>
+                  <span>빠르게 척척 말하는 아이용</span>
+                </button>
+                <button type="button" class="choice-card active" data-turn-wait="patient">
+                  <strong>넉넉하게 (2.4초 · 권장)</strong>
+                  <span>단어 생각하며 멈춰도 기다려 줌</span>
+                </button>
+                <button type="button" class="choice-card" data-turn-wait="extra">
+                  <strong>아주 여유롭게 (3.4초)</strong>
+                  <span>천천히 긴 문장 연습 · 초3 추천</span>
+                </button>
+              </div>
+              <span class="status-text">아이가 문장 중간에 잠깐 쉬더라도 설정된 시간 동안 선생님이 끊지 않고 기다립니다.</span>
             </div>
 
             <div class="config-block">
@@ -979,6 +998,6 @@
     <canvas id="captureCanvas" class="hidden"></canvas>
   </div>
 
-  <script type="module" src="js/app.js?v=20261123c"></script>
+  <script type="module" src="js/app.js?v=20261124a"></script>
 </body>
 </html>

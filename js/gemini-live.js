@@ -178,7 +178,15 @@ export class GeminiLiveClient {
     this.closedByUser = false;
   }
 
-  connect({ apiKey, model, voiceName, systemInstruction, tools = [], strictNoiseGuard = false }) {
+  connect({
+    apiKey,
+    model,
+    voiceName,
+    systemInstruction,
+    tools = [],
+    strictNoiseGuard = false,
+    silenceDurationMs = 2400,
+  }) {
     return new Promise((resolve, reject) => {
       this.closedByUser = false;
       this.isSetupComplete = false;
@@ -186,6 +194,7 @@ export class GeminiLiveClient {
       const cleanKey = apiKey.trim();
       const modelPath = model.startsWith('models/') ? model : `models/${model}`;
       const url = `${WS_BASE}?key=${encodeURIComponent(cleanKey)}`;
+      const clampedSilenceMs = Math.max(1000, Math.min(4500, Number(silenceDurationMs) || 2400));
 
       let settled = false;
       const ws = new WebSocket(url);
@@ -219,8 +228,8 @@ export class GeminiLiveClient {
             automaticActivityDetection: {
               startOfSpeechSensitivity: 'START_SENSITIVITY_LOW',
               endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
-              prefixPaddingMs: 240,
-              silenceDurationMs: 1100,
+              prefixPaddingMs: 300,
+              silenceDurationMs: clampedSilenceMs,
             },
             activityHandling: strictNoiseGuard ? 'NO_INTERRUPTION' : 'START_OF_ACTIVITY_INTERRUPTS',
           },

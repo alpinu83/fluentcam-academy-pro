@@ -474,6 +474,7 @@ html, body {
 .star-chip { color: #facc15; border-color: rgba(250,204,21,0.35); }
 .gate-chip { color: var(--text-secondary); }
 .gate-chip.active-voice { background: rgba(34,90,62,0.88); border-color: rgba(155,224,184,0.5); color: #e6fff0; }
+.gate-chip.waiting-pause { background: rgba(120,76,18,0.9); border-color: rgba(251,191,36,0.55); color: #fef3c7; }
 .mini-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sage); }
 
 /* Chalkboard, Star, Pop-Quiz */
