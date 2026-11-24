@@ -20,7 +20,7 @@ import {
   saveCustomAiTextbook,
   deleteCustomAiTextbook,
 } from './textbooks.js?v=20261124d';
-import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js?v=20261124d';
+import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js?v=20261124e';
 import { Avatar3DController } from './avatar-3d.js';
 import { buildClassroomToolDeclarations, playRewardChime } from './classroom-tools.js';
 import { ClassroomWhiteboard } from './whiteboard.js';
@@ -2053,6 +2053,8 @@ function isPermanentLiveError(reason = '') {
   const r = String(reason || '').toLowerCase();
   return (
     r.includes('api key') ||
+    r.includes('prepayment') ||
+    r.includes('depleted') ||
     r.includes('invalid_argument') ||
     r.includes('permission_denied') ||
     r.includes('billing') ||

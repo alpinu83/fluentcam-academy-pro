@@ -406,20 +406,23 @@ export class GeminiLiveClient {
         if (this.ws !== ws) return;
         clearTimeout(setupTimeout);
         this.isSetupComplete = false;
-        const reasonText = ev.reason ? ` (${ev.reason})` : '';
+        const reasonStr = ev.reason || '';
+        const reasonText = reasonStr ? ` (${reasonStr})` : '';
         if (!settled) {
           settled = true;
-          const err = new Error(
-            `연결이 종료되었습니다 [코드 ${ev.code}]${reasonText}. 선택한 Live 모델이 API 키에서 지원되는지 확인해 주세요.`
-          );
+          const isDepleted = /prepayment|credits are depleted|billing|billi/i.test(reasonStr);
+          const friendlyMsg = isDepleted
+            ? `AI Studio 선불 크레딧 잔액이 0원이라 연결이 차단되었습니다 [코드 ${ev.code}]. 무료로 사용하시려면 https://ai.studio/projects 에서 결제가 연결되지 않은 새 프로젝트로 무료 API 키를 발급해 부모 관리에 입력해 주세요.`
+            : `연결이 종료되었습니다 [코드 ${ev.code}]${reasonText}. 선택한 Live 모델이 API 키에서 지원되는지 확인해 주세요.`;
+          const err = new Error(friendlyMsg);
           err.code = ev.code;
-          err.reason = ev.reason || '';
+          err.reason = reasonStr;
           reject(err);
           return;
         }
         this.callbacks.onClose?.({
           code: ev.code,
-          reason: ev.reason || '',
+          reason: reasonStr,
           closedByUser: this.closedByUser,
         });
       };
