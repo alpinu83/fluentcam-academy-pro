@@ -5,7 +5,7 @@ import {
   LEVELS,
   CORRECTION_MODES,
   buildSystemInstruction,
-} from './tutors.js?v=20261124b';
+} from './tutors.js?v=20261124d';
 import {
   SPEAKING_FOCUS_MODES,
   analyzeConversationSpeaking,
@@ -14,22 +14,23 @@ import {
 } from './speaking-coach.js?v=20261124b';
 import {
   getAllTextbooks,
+  formatSingleTextbookPage,
   loadCustomAiTextbooks,
   loadDeletedAiBookIds,
   saveCustomAiTextbook,
   deleteCustomAiTextbook,
-} from './textbooks.js?v=20261124b';
-import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js?v=20261124c';
+} from './textbooks.js?v=20261124d';
+import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js?v=20261124d';
 import { Avatar3DController } from './avatar-3d.js';
 import { buildClassroomToolDeclarations, playRewardChime } from './classroom-tools.js';
 import { ClassroomWhiteboard } from './whiteboard.js';
 import { loadFsrsDeck, ingestLessonIntoFsrsDeck } from './fsrs.js';
-import { createAcademyPages } from './academy-pages.js?v=20261124b';
+import { createAcademyPages } from './academy-pages.js?v=20261124d';
 import {
   generateAiTextbook,
   generateStudyReport,
   reportToMarkdown,
-} from './feedback.js?v=20261124b';
+} from './feedback.js?v=20261124d';
 import {
   DEFAULT_SYNC_REPO,
   cleanGitHubToken,
@@ -145,10 +146,10 @@ const state = {
   previewPageIdx: 0,
   previewReadOnly: false,
 
-  // Model & streaming
+  // Model & streaming (100% Google AI Studio Free-Tier optimized)
   liveModel: 'gemini-3.8-live',
   customLiveModel: '',
-  reportModel: 'gemini-3.5-flash-lite',
+  reportModel: 'gemini-3.8-flash',
   videoIntervalMs: 0, // Manual snapshot default (prevents Gemini Live audio+video 1011 drops on iPad)
   shareCamera: true,
 
@@ -702,9 +703,17 @@ function restoreSettings() {
       if (['low', 'medium', 'high'].includes(saved.noiseSensitivity)) state.noiseSensitivity = saved.noiseSensitivity;
       if (['normal', 'patient', 'extra'].includes(saved.turnWaitMode)) state.turnWaitMode = saved.turnWaitMode;
       if (['auto', 'ptt'].includes(saved.speechMode)) state.speechMode = saved.speechMode;
-      if (saved.liveModel) state.liveModel = saved.liveModel;
+      if (saved.liveModel) {
+        state.liveModel =
+          saved.liveModel === 'gemini-2.5-flash-native-audio-preview-12-2025'
+            ? 'gemini-3.8-live'
+            : saved.liveModel;
+      }
       if (saved.customLiveModel) state.customLiveModel = saved.customLiveModel;
-      if (saved.reportModel) state.reportModel = saved.reportModel;
+      if (saved.reportModel) {
+        state.reportModel =
+          saved.reportModel === 'gemini-2.5-flash' ? 'gemini-3.8-flash' : saved.reportModel;
+      }
       if (typeof saved.videoIntervalMs === 'number') state.videoIntervalMs = saved.videoIntervalMs;
       if (typeof saved.shareCamera === 'boolean') state.shareCamera = saved.shareCamera;
     }
@@ -1349,8 +1358,9 @@ function renderActiveCallBookPage({ notifyTutor = false } = {}) {
   });
 
   if (notifyTutor && state.inCall) {
+    const pageDetail = formatSingleTextbookPage(page, idx + 1);
     state.liveClient?.sendTextTurn(
-      `[Lesson Page Sync] I turned our textbook to Page ${idx + 1} (${page.step}: "${page.heading}"). Let's practice this page now!`
+      `[Lesson Page Sync] I turned our textbook to Page ${idx + 1}. Practice this page now:\n${pageDetail}`
     );
     showToast(`교재 ${idx + 1}쪽으로 이동했어요 — AI 선생님 화면과 동기화됨`);
   }
@@ -1448,6 +1458,7 @@ async function handleGeminiToolCall(fnCall) {
       ok: true,
       currentPage: targetIdx + 1,
       heading: book.pages[targetIdx].heading,
+      pageContent: formatSingleTextbookPage(book.pages[targetIdx], targetIdx + 1),
       ...(coachNote ? { coachNote } : {}),
     };
   }
@@ -2031,10 +2042,11 @@ async function startCall() {
   }
 }
 
+// High-quality 3.x Free-Tier Live models only (never silently downgrade conversation quality to 2.5)
 const LIVE_MODEL_FALLBACKS = [
   'gemini-3.8-live',
   'gemini-3.1-flash-live-preview',
-  'gemini-2.5-flash-native-audio-preview-12-2025',
+  'gemini-3.8-live-extended-thinking',
 ];
 
 function isPermanentLiveError(reason = '') {
@@ -2067,8 +2079,14 @@ function buildReconnectContinuityInstruction(baseInstruction) {
     .slice(-6)
     .map((t) => `${t.role === 'user' ? 'Student' : 'Tutor'}: ${t.text.trim()}`)
     .join('\n');
-  const pageNote = state.activeCallTextbook
-    ? `Currently on Page ${state.activeCallPageIdx + 1} of "${state.activeCallTextbook.title}".`
+  const activeBook = state.activeCallTextbook;
+  const activePage = activeBook?.pages?.[state.activeCallPageIdx];
+  const pageNote = activeBook
+    ? `Currently on Page ${state.activeCallPageIdx + 1} of "${activeBook.title}".${
+        activePage && state.activeCallPageIdx > 0
+          ? `\nActive Page Content:\n- ${formatSingleTextbookPage(activePage, state.activeCallPageIdx + 1)}`
+          : ''
+      }`
     : '';
   return `${baseInstruction}
 

@@ -263,7 +263,10 @@ export class GeminiLiveClient {
           },
           sessionResumption: resumptionHandle ? { handle: resumptionHandle } : {},
           contextWindowCompression: {
-            slidingWindow: {},
+            triggerTokens: '24000',
+            slidingWindow: {
+              targetTokens: '12000',
+            },
           },
           inputAudioTranscription: {},
           outputAudioTranscription: {},

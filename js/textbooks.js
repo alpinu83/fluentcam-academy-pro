@@ -1039,54 +1039,56 @@ export function getAllTextbooks() {
 // Keep legacy export name working seamlessly
 export const TEXTBOOKS = BUILTIN_TEXTBOOKS;
 
+export function formatSingleTextbookPage(p, pageNum = 1) {
+  if (!p) return '';
+  const parts = [`Page ${pageNum} (${p.step} — ${p.heading})`];
+  if (p.vocab) {
+    parts.push(`Vocab: ${p.vocab.map((v) => `${v.word} (${v.meaning})`).join(', ')}`);
+  }
+  if (p.readingParagraphs) {
+    parts.push(`Reading: "${p.readingParagraphs.join(' ')}"`);
+  }
+  if (p.menuItems) {
+    parts.push(`Menu: ${p.menuItems.map((m) => `${m.name} (${m.price})`).join(', ')}`);
+  }
+  if (p.patterns) {
+    parts.push(`Patterns: ${p.patterns.map((pt) => pt.en).join(' | ')}`);
+  }
+  if (p.debatePros) {
+    parts.push(`Pros: ${p.debatePros.join(' / ')} | Cons: ${p.debateCons.join(' / ')}`);
+  }
+  if (p.questions) {
+    parts.push(`Questions: ${p.questions.join(' / ')}`);
+  }
+  if (p.missionCards) {
+    parts.push(`Mission: ${p.missionCards.map((m) => `${m.label}: ${m.detail}`).join(' / ')}`);
+  }
+  if (p.teacherNotes) {
+    parts.push(`Guide: ${p.teacherNotes}`);
+  }
+  return parts.join('\n  ');
+}
+
 export function formatTextbookForPrompt(textbook, activePageIdx = 0) {
   if (!textbook) return '';
   if (textbook.id === 'custom-book') {
-    return `\n[Lesson Material Provided by Parent]
+    const trimmedContent = String(textbook.customContent || '').slice(0, 1800);
+    return `\n[Lesson Material]
 Title: ${textbook.title || 'Custom Reading Material'}
-Content:
-${textbook.customContent}
-
-Guide the student warmly through this material: read key parts together, check understanding with short speaking questions, and always nudge full-sentence English answers!`;
+${trimmedContent}
+Guide the student warmly through this material with short speaking questions and full-sentence coaching.`;
   }
 
-  const pageSummaries = textbook.pages
-    .map((p, idx) => {
-      const parts = [`- Page ${idx + 1} (${p.step} — ${p.heading})`];
-      if (p.vocab) {
-        parts.push(`  Vocab: ${p.vocab.map((v) => `${v.word} (${v.meaning})`).join(', ')}`);
-      }
-      if (p.readingParagraphs) {
-        parts.push(`  Reading Text: "${p.readingParagraphs.join(' ')}"`);
-      }
-      if (p.menuItems) {
-        parts.push(`  Menu: ${p.menuItems.map((m) => `${m.name} (${m.price})`).join(', ')}`);
-      }
-      if (p.patterns) {
-        parts.push(`  Key Patterns: ${p.patterns.map((pt) => pt.en).join(' | ')}`);
-      }
-      if (p.debatePros) {
-        parts.push(`  Pros: ${p.debatePros.join(' / ')} | Cons: ${p.debateCons.join(' / ')}`);
-      }
-      if (p.questions) {
-        parts.push(`  Questions: ${p.questions.join(' / ')}`);
-      }
-      if (p.missionCards) {
-        parts.push(`  Mission: ${p.missionCards.map((m) => `${m.label}: ${m.detail}`).join(' / ')}`);
-      }
-      if (p.teacherNotes) {
-        parts.push(`  Coaching Guide: ${p.teacherNotes}`);
-      }
-      return parts.join('\n');
-    })
-    .join('\n\n');
+  const pages = textbook.pages || [];
+  const safeIdx = Math.max(0, Math.min(pages.length - 1, activePageIdx));
+  const outline = pages
+    .map((p, idx) => `P${idx + 1}: ${p.heading}${idx === safeIdx ? ' (ACTIVE)' : ''}`)
+    .join(' | ');
+  const activeDetail = formatSingleTextbookPage(pages[safeIdx], safeIdx + 1);
 
-  return `\n[Active Interactive Lesson Textbook]
-Book: "${textbook.title}" (${textbook.gradeTag}, ${textbook.levelRange})
-The student can see this exact textbook on their screen right next to your video.
-Start on Page ${activePageIdx + 1} and pace the lesson for an engaging ~20-minute speaking class.
-Do NOT rush to turn_textbook_page after one short answer—stay on each page for at least 3 to 5 student speaking turns, coach any errors or unfinished sentences first, and ask follow-up questions so the student truly practices the vocabulary and patterns aloud before advancing!
-
-Full Textbook Outline:
-${pageSummaries}`;
+  return `\n[Active Textbook]
+"${textbook.title}" (${textbook.gradeTag}, ${textbook.levelRange}) | Pages: ${outline}
+Stay 3–5 student speaking turns on each page, coach errors/fragments first, then call turn_textbook_page(pageNumber) to receive the next page's full content!
+Active Page Content:
+- ${activeDetail}`;
 }

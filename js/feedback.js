@@ -1,42 +1,61 @@
 const REST_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const FREE_REPORT_FALLBACK_MODEL = 'gemini-3.5-flash-lite';
 
 async function callGeminiJson({ apiKey, model, prompt, responseMimeType = 'application/json' }) {
-  const cleanModel = model.replace(/^models\//, '');
-  const url = `${REST_BASE}/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
+  const primaryModel = String(model || 'gemini-3.8-flash').replace(/^models\//, '');
+  const candidates =
+    primaryModel === FREE_REPORT_FALLBACK_MODEL
+      ? [primaryModel]
+      : [primaryModel, FREE_REPORT_FALLBACK_MODEL];
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType,
-        temperature: 0.45,
-      },
-    }),
-  });
+  let lastErr = null;
+  for (let i = 0; i < candidates.length; i++) {
+    const cleanModel = candidates[i];
+    const url = `${REST_BASE}/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
 
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    throw new Error(`Gemini API 오류 (${res.status}): ${errBody.slice(0, 220)}`);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType,
+          temperature: 0.45,
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      lastErr = new Error(`Gemini API 오류 (${res.status}): ${errBody.slice(0, 220)}`);
+      // On Free-Tier rate limit (429), overload (503), or deprecated/unavailable model (404), auto-fallback
+      if ((res.status === 429 || res.status === 503 || res.status === 404) && i + 1 < candidates.length) {
+        continue;
+      }
+      throw lastErr;
+    }
+
+    const data = await res.json();
+    const text =
+      data?.candidates?.[0]?.content?.parts
+        ?.map((p) => p.text || '')
+        .join('')
+        .trim() || '';
+
+    if (!text) {
+      lastErr = new Error('응답 텍스트가 비어 있습니다.');
+      if (i + 1 < candidates.length) continue;
+      throw lastErr;
+    }
+
+    if (responseMimeType === 'application/json') {
+      const cleaned = text.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+      return JSON.parse(cleaned);
+    }
+    return text;
   }
 
-  const data = await res.json();
-  const text =
-    data?.candidates?.[0]?.content?.parts
-      ?.map((p) => p.text || '')
-      .join('')
-      .trim() || '';
-
-  if (!text) {
-    throw new Error('응답 텍스트가 비어 있습니다.');
-  }
-
-  if (responseMimeType === 'application/json') {
-    const cleaned = text.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
-    return JSON.parse(cleaned);
-  }
-  return text;
+  throw lastErr || new Error('Gemini API 호출에 실패했습니다.');
 }
 
 function formatTranscriptForPrompt(transcript, maxTurns = 80) {
