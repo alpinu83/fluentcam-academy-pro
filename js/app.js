@@ -19,7 +19,7 @@ import {
   saveCustomAiTextbook,
   deleteCustomAiTextbook,
 } from './textbooks.js?v=20261124b';
-import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js?v=20261124a';
+import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js?v=20261124c';
 import { Avatar3DController } from './avatar-3d.js';
 import { buildClassroomToolDeclarations, playRewardChime } from './classroom-tools.js';
 import { ClassroomWhiteboard } from './whiteboard.js';
@@ -149,7 +149,7 @@ const state = {
   liveModel: 'gemini-3.8-live',
   customLiveModel: '',
   reportModel: 'gemini-3.5-flash-lite',
-  videoIntervalMs: 1200,
+  videoIntervalMs: 0, // Manual snapshot default (prevents Gemini Live audio+video 1011 drops on iPad)
   shareCamera: true,
 
   // Lobby preview media
@@ -175,6 +175,14 @@ const state = {
   waveRafId: null,
   micMuted: false,
   camEnabled: true,
+
+  // 1011 / Wi-Fi / 10-min seamless auto-reconnect state
+  isReconnecting: false,
+  reconnectAttempts: 0,
+  reconnectTimerId: null,
+  stableResetTimerId: null,
+  pendingGoAwayRotation: false,
+  activeCallConfig: null,
 
   // Live Classroom Metrics & Tools
   studentSpeakingMs: 0,
@@ -1425,7 +1433,9 @@ function updateCallPaceUI(paceKey) {
 async function handleGeminiToolCall(fnCall) {
   const name = fnCall.name;
   const args = fnCall.args || {};
-  const liveCoachingSnapshot = buildMidCallCoachFeedback(state.transcript);
+  const coachSnap = buildMidCallCoachFeedback(state.transcript);
+  const coachNote =
+    coachSnap && coachSnap.studentTurns >= 2 && coachSnap.coachTip ? coachSnap.coachTip : '';
 
   if (name === 'turn_textbook_page') {
     const book = state.activeCallTextbook;
@@ -1438,29 +1448,29 @@ async function handleGeminiToolCall(fnCall) {
       ok: true,
       currentPage: targetIdx + 1,
       heading: book.pages[targetIdx].heading,
-      liveCoachingSnapshot,
+      ...(coachNote ? { coachNote } : {}),
     };
   }
 
   if (name === 'award_gold_star') {
     triggerGoldStar(args.reason || '정말 잘했어요!');
-    return { ok: true, totalSessionStars: state.sessionStarsEarned, liveCoachingSnapshot };
+    return { ok: true, totalSessionStars: state.sessionStarsEarned, ...(coachNote ? { coachNote } : {}) };
   }
 
   if (name === 'write_on_whiteboard') {
     showChalkboardNote(args.englishSentence || '', args.koreanTip || '');
-    return { ok: true, displayed: true, liveCoachingSnapshot };
+    return { ok: true, displayed: true, ...(coachNote ? { coachNote } : {}) };
   }
 
   if (name === 'show_pop_quiz') {
     showPopQuiz(args);
-    return { ok: true, quizDisplayed: true, liveCoachingSnapshot };
+    return { ok: true, quizDisplayed: true };
   }
 
   if (name === 'set_tutor_expression') {
     if (args.mood) state.avatar3d?.setMood(args.mood);
     if (args.gesture && args.gesture !== 'none') state.avatar3d?.playGesture(args.gesture, 2.5);
-    return { ok: true, liveCoachingSnapshot };
+    return { ok: true };
   }
 
   if (name === 'adjust_speaking_pace') {
@@ -1470,10 +1480,10 @@ async function handleGeminiToolCall(fnCall) {
       args.reason || `선생님이 말하는 속도를 [${SPEAKING_PACES[nextPace].label}]로 자동 조절했어요!`,
       3400
     );
-    return { ok: true, activePace: nextPace, liveCoachingSnapshot };
+    return { ok: true, activePace: nextPace };
   }
 
-  return { ok: true, liveCoachingSnapshot };
+  return { ok: true };
 }
 
 // ==================== DEVICE PREVIEW (IN PARENT SYSTEM TAB) ====================
@@ -1821,7 +1831,7 @@ async function startCall() {
       fsrsDeck: loadFsrsDeck(),
     });
 
-    // Connect Gemini Live WebSocket
+    // Connect Gemini Live WebSocket (with 1011/Wi-Fi auto-reconnect & automatic model failover)
     const systemInstruction = buildSystemInstruction({
       tutor,
       studentName,
@@ -1835,6 +1845,25 @@ async function startCall() {
       learnerMemoryBlock: learnerMemory.promptBlock,
     });
 
+    const turnWaitCfg = TURN_WAIT_CONFIG[state.turnWaitMode] || TURN_WAIT_CONFIG.patient;
+    const isIpadOrIos =
+      /iPad|iPhone|iPod/i.test(navigator.userAgent || '') ||
+      (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
+
+    state.isReconnecting = false;
+    state.reconnectAttempts = 0;
+    state.pendingGoAwayRotation = false;
+    state.activeCallConfig = {
+      apiKey,
+      model: liveModel,
+      voiceName: tutor.voiceName,
+      baseSystemInstruction: systemInstruction,
+      tools: state.enableTools ? buildClassroomToolDeclarations() : [],
+      strictNoiseGuard: state.noiseSensitivity === 'high',
+      silenceDurationMs: turnWaitCfg.ms,
+      isIpadOrIos,
+    };
+
     state.liveClient = new GeminiLiveClient({
       onAudioChunk: (b64, sampleRate) => state.audioPlayer?.enqueueBase64Pcm(b64, sampleRate),
       onInterrupted: () => {
@@ -1843,32 +1872,44 @@ async function startCall() {
       },
       onInputTranscription: (text) => appendOrUpdateTurn('user', text),
       onOutputTranscription: (text) => appendOrUpdateTurn('tutor', text),
-      onTurnComplete: () => finalizeActiveTurns(),
+      onTurnComplete: () => {
+        finalizeActiveTurns();
+        if (state.pendingGoAwayRotation && state.inCall && !state.isReconnecting) {
+          state.pendingGoAwayRotation = false;
+          scheduleSeamlessReconnect({ code: 1000, reason: 'goAway', proactive: true });
+        }
+      },
+      onGoAway: () => {
+        // Server warns ~60s before 10-min limit: rotate smoothly on next idle turn
+        state.pendingGoAwayRotation = true;
+      },
       onToolCall: handleGeminiToolCall,
-      onError: (err) => showToast(err.message, 4000),
+      onError: () => {
+        // Handled cleanly inside onClose reconnect flow so we don't spam error toasts
+      },
       onClose: ({ closedByUser, code, reason }) => {
         if (!closedByUser && state.inCall) {
-          showToast(`연결이 종료되었습니다 (${code}${reason ? `: ${reason}` : ''})`, 4500);
-          endCall();
+          handleUnexpectedLiveClose({ code, reason });
         }
       },
     });
 
-    const turnWaitCfg = TURN_WAIT_CONFIG[state.turnWaitMode] || TURN_WAIT_CONFIG.patient;
-
-    await state.liveClient.connect({
-      apiKey,
-      model: liveModel,
-      voiceName: tutor.voiceName,
-      systemInstruction,
-      tools: state.enableTools ? buildClassroomToolDeclarations() : [],
-      strictNoiseGuard: state.noiseSensitivity === 'high',
-      silenceDurationMs: turnWaitCfg.ms,
+    const connectedModel = await connectLiveWithFallback({
+      client: state.liveClient,
+      cfg: state.activeCallConfig,
+      preferredModel: liveModel,
     });
+    state.activeCallConfig.model = connectedModel;
+    if (connectedModel !== liveModel) {
+      showToast(`안정적인 연결을 위해 [${connectedModel}] 모델로 자동 전환했어요.`, 3600);
+    }
 
     // Smart Noise-Gate AudioWorklet (with patient mid-sentence pause hold)
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     state.captureAudioCtx = new AudioCtx();
+    if (state.captureAudioCtx.state === 'suspended') {
+      await state.captureAudioCtx.resume().catch(() => {});
+    }
     await state.captureAudioCtx.audioWorklet.addModule('./js/audio-worklet.js?v=20261124a');
 
     const micSource = state.captureAudioCtx.createMediaStreamSource(stream);
@@ -1888,7 +1929,7 @@ async function startCall() {
       if (!msg) return;
 
       if (msg.type === 'speechEnd') {
-        if (msg.reason !== 'tutorStarted') {
+        if (msg.reason !== 'tutorStarted' && !state.isReconnecting) {
           state.liveClient?.sendAudioStreamEnd();
         }
         if (!state.callPttMode) {
@@ -1920,7 +1961,7 @@ async function startCall() {
         }
       }
 
-      if (msg.type === 'pcm' && msg.buffer && !state.micMuted) {
+      if (msg.type === 'pcm' && msg.buffer && !state.micMuted && !state.isReconnecting) {
         if (!msg.inPause) state.studentSpeakingMs += 100;
         state.liveClient?.sendAudioPcmBuffer(msg.buffer);
       }
@@ -1943,19 +1984,32 @@ async function startCall() {
       el.callTimer.textContent = formatDuration(elapsed);
     }, 1000);
 
-    if (state.camEnabled && state.videoIntervalMs > 0) {
+    // iPad/iOS Guard: never spam fast 1.2s JPEG frames on iPad (triggers Gemini Live 1011 audio+video disconnect)
+    const effectiveVideoIntervalMs = isIpadOrIos
+      ? state.videoIntervalMs >= 3500
+        ? state.videoIntervalMs
+        : 0
+      : state.videoIntervalMs;
+
+    if (state.camEnabled && effectiveVideoIntervalMs > 0) {
       state.videoTimerId = setInterval(() => {
-        const frame = captureWebcamJpegBase64(0.65, 560);
+        if (state.isReconnecting || state.audioPlayer?.isSpeaking) return;
+        const maxW = isIpadOrIos ? 384 : 480;
+        const quality = isIpadOrIos ? 0.55 : 0.62;
+        const frame = captureWebcamJpegBase64(quality, maxW);
         if (frame) state.liveClient?.sendVideoFrameBase64(frame);
-      }, state.videoIntervalMs);
+      }, effectiveVideoIntervalMs);
     }
 
     startWaveformLoop();
 
     setTimeout(() => {
       if (!state.inCall) return;
-      const firstFrame = captureWebcamJpegBase64(0.7, 640);
-      if (firstFrame) state.liveClient?.sendVideoFrameBase64(firstFrame);
+      // Only push an initial camera frame if continuous video streaming is enabled (keeps manual-snapshot mode pure audio & immune to 1011)
+      if (state.camEnabled && effectiveVideoIntervalMs > 0) {
+        const firstFrame = captureWebcamJpegBase64(0.58, 420);
+        if (firstFrame) state.liveClient?.sendVideoFrameBase64(firstFrame);
+      }
       state.avatar3d?.playGesture('handup', 2.0);
 
       const memoryHint =
@@ -1977,12 +2031,241 @@ async function startCall() {
   }
 }
 
+const LIVE_MODEL_FALLBACKS = [
+  'gemini-3.8-live',
+  'gemini-3.1-flash-live-preview',
+  'gemini-2.5-flash-native-audio-preview-12-2025',
+];
+
+function isPermanentLiveError(reason = '') {
+  const r = String(reason || '').toLowerCase();
+  return (
+    r.includes('api key') ||
+    r.includes('invalid_argument') ||
+    r.includes('permission_denied') ||
+    r.includes('billing') ||
+    r.includes('unauthenticated')
+  );
+}
+
+function getOrderedLiveModelCandidates(preferredModel) {
+  const clean = String(preferredModel || 'gemini-3.8-live').replace(/^models\//, '').trim();
+  const list = [clean, ...LIVE_MODEL_FALLBACKS];
+  return [...new Set(list.filter(Boolean))];
+}
+
+function stopVideoAutoTimer() {
+  if (state.videoTimerId) {
+    clearInterval(state.videoTimerId);
+    state.videoTimerId = null;
+  }
+}
+
+function buildReconnectContinuityInstruction(baseInstruction) {
+  const recent = state.transcript
+    .filter((t) => t && t.text && t.text.trim())
+    .slice(-6)
+    .map((t) => `${t.role === 'user' ? 'Student' : 'Tutor'}: ${t.text.trim()}`)
+    .join('\n');
+  const pageNote = state.activeCallTextbook
+    ? `Currently on Page ${state.activeCallPageIdx + 1} of "${state.activeCallTextbook.title}".`
+    : '';
+  return `${baseInstruction}
+
+[SEAMLESS RECONNECTION CONTEXT — DO NOT RESTART THE LESSON!]
+There was a brief 1-second network hiccup and you are right back in the middle of the live class!
+${pageNote}
+${recent ? `Most recent conversation right before the blip:\n${recent}\n` : ''}
+Continue naturally right from where you left off in 1 short warm sentence (do NOT re-introduce yourself from scratch or apologize at length).`;
+}
+
+async function connectLiveWithFallback({ client, cfg, preferredModel }) {
+  const candidates = getOrderedLiveModelCandidates(preferredModel);
+  let lastErr = null;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    try {
+      await client.connect({
+        apiKey: cfg.apiKey,
+        model: candidate,
+        voiceName: cfg.voiceName,
+        systemInstruction: cfg.baseSystemInstruction,
+        tools: cfg.tools,
+        strictNoiseGuard: cfg.strictNoiseGuard,
+        silenceDurationMs: cfg.silenceDurationMs,
+      });
+      return candidate;
+    } catch (err) {
+      lastErr = err;
+      if (isPermanentLiveError(err?.reason || err?.message)) {
+        throw err;
+      }
+      // Retry same model once on transient 1011 before falling over to backup Live model
+      if (i === 0 && (err?.code === 1011 || err?.code === 1006)) {
+        await new Promise((r) => setTimeout(r, 1200));
+        try {
+          await client.connect({
+            apiKey: cfg.apiKey,
+            model: candidate,
+            voiceName: cfg.voiceName,
+            systemInstruction: cfg.baseSystemInstruction,
+            tools: cfg.tools,
+            strictNoiseGuard: cfg.strictNoiseGuard,
+            silenceDurationMs: cfg.silenceDurationMs,
+          });
+          return candidate;
+        } catch (retryErr) {
+          lastErr = retryErr;
+          if (isPermanentLiveError(retryErr?.reason || retryErr?.message)) throw retryErr;
+        }
+      }
+    }
+  }
+  throw lastErr || new Error('실시간 음성 서버 연결에 실패했습니다.');
+}
+
+function handleUnexpectedLiveClose({ code, reason }) {
+  if (!state.inCall) return;
+  if (isPermanentLiveError(reason)) {
+    showToast(`API 키 또는 권한 오류가 발생했습니다 (${code}: ${reason})`, 5000);
+    endCall();
+    return;
+  }
+  // If 1011 occurred while auto video frames were running, stop auto video immediately
+  if (code === 1011 && state.videoTimerId) {
+    stopVideoAutoTimer();
+  }
+  scheduleSeamlessReconnect({ code, reason, proactive: false });
+}
+
+function scheduleSeamlessReconnect({ code = 1011, reason = '', proactive = false } = {}) {
+  if (!state.inCall || state.isReconnecting || !state.activeCallConfig) return;
+
+  const MAX_ATTEMPTS = 4;
+  if (!proactive && state.reconnectAttempts >= MAX_ATTEMPTS) {
+    const modelTip =
+      code === 1011
+        ? 'Google 실시간 서버(1011) 응답이 불안정합니다. 부모 관리 → 3번 탭에서 Live 모델을 변경하거나 잠시 후 다시 시도해 주세요.'
+        : `연결이 종료되었습니다 (코드 ${code}${reason ? `: ${reason}` : ''})`;
+    showToast(modelTip, 5500);
+    endCall();
+    return;
+  }
+
+  state.isReconnecting = true;
+  if (!proactive) state.reconnectAttempts += 1;
+  const attemptNum = state.reconnectAttempts;
+  finalizeActiveTurns();
+  state.audioPlayer?.interrupt();
+
+  el.callTutorState.textContent = proactive
+    ? '연결 새로고침 중...'
+    : `다시 연결 중... (${attemptNum}/${MAX_ATTEMPTS})`;
+  if (!proactive && attemptNum === 1) {
+    showToast('🔄 연결이 잠시 흔들려 자동으로 이어서 연결하고 있어요!', 3200);
+  }
+
+  // Wait ~1.5s after 1011 (immediate 0ms reconnect often gets another 1011 from Google's router)
+  const delayMs = proactive ? 250 : attemptNum === 1 ? 1500 : Math.min(4000, 1500 * attemptNum);
+
+  if (state.reconnectTimerId) clearTimeout(state.reconnectTimerId);
+  state.reconnectTimerId = setTimeout(async () => {
+    state.reconnectTimerId = null;
+    if (!state.inCall || !state.liveClient || !state.activeCallConfig) {
+      state.isReconnecting = false;
+      return;
+    }
+
+    const cfg = state.activeCallConfig;
+    const candidates = getOrderedLiveModelCandidates(cfg.model);
+    // On 2nd+ 1011 retry, rotate to a backup Live model (e.g. 3.8-live <-> 3.1-flash-live-preview <-> 2.5-native-audio)
+    const nextModel =
+      !proactive && code === 1011 && attemptNum >= 2
+        ? candidates[(attemptNum - 1) % candidates.length]
+        : cfg.model;
+
+    // For proactive goAway rotation, try saved handle first; for 1011, always start fresh with transcript continuity
+    // (Google Live API can poison resumption handles after 1011!)
+    const useHandle = proactive && state.liveClient.resumptionHandle ? state.liveClient.resumptionHandle : null;
+    const reconnectInstruction = useHandle
+      ? cfg.baseSystemInstruction
+      : buildReconnectContinuityInstruction(cfg.baseSystemInstruction);
+
+    try {
+      await state.liveClient.connect({
+        apiKey: cfg.apiKey,
+        model: nextModel,
+        voiceName: cfg.voiceName,
+        systemInstruction: reconnectInstruction,
+        tools: cfg.tools,
+        strictNoiseGuard: cfg.strictNoiseGuard,
+        silenceDurationMs: cfg.silenceDurationMs,
+        resumptionHandle: useHandle,
+      });
+
+      if (!state.inCall) return;
+      cfg.model = nextModel;
+      state.isReconnecting = false;
+      el.callTutorState.textContent = '듣고 있어요';
+
+      // Resume AudioContexts on iPadOS if Safari suspended them during the blip
+      if (state.captureAudioCtx?.state === 'suspended') {
+        state.captureAudioCtx.resume().catch(() => {});
+      }
+      if (state.audioPlayer?.ctx?.state === 'suspended') {
+        state.audioPlayer.ctx.resume().catch(() => {});
+      }
+
+      if (!proactive) {
+        showToast(
+          nextModel !== getActiveLiveModel()
+            ? `✅ 다시 연결되었어요! (${nextModel}로 안정화)`
+            : '✅ 선생님과 다시 연결되었어요! 이어서 말해 보세요.',
+          2800
+        );
+        // Gently prompt tutor to pick right back up if we rebuilt context cleanly
+        if (!useHandle && state.transcript.length > 0) {
+          state.liveClient.sendTextTurn(
+            '(Connection briefly flickered and is back now. Smile warmly and continue right where we were in 1 short sentence!)'
+          );
+        }
+      }
+
+      // Reset failure counter once connection stays healthy for 12s
+      if (state.stableResetTimerId) clearTimeout(state.stableResetTimerId);
+      state.stableResetTimerId = setTimeout(() => {
+        if (state.inCall && !state.isReconnecting) {
+          state.reconnectAttempts = 0;
+        }
+      }, 12000);
+    } catch (err) {
+      state.isReconnecting = false;
+      if (!state.inCall) return;
+      if (isPermanentLiveError(err?.reason || err?.message)) {
+        showToast(err.message || 'API 인증 오류가 발생했습니다.', 5000);
+        endCall();
+        return;
+      }
+      scheduleSeamlessReconnect({ code: err?.code || code, reason: err?.reason || '', proactive: false });
+    }
+  }, delayMs);
+}
+
 async function teardownCallResources() {
   state.inCall = false;
+  state.isReconnecting = false;
+  state.pendingGoAwayRotation = false;
+  state.reconnectAttempts = 0;
+  state.activeCallConfig = null;
   state.pttPressed = false;
+  if (state.reconnectTimerId) clearTimeout(state.reconnectTimerId);
+  if (state.stableResetTimerId) clearTimeout(state.stableResetTimerId);
   if (state.videoTimerId) clearInterval(state.videoTimerId);
   if (state.callTimerId) clearInterval(state.callTimerId);
   if (state.waveRafId) cancelAnimationFrame(state.waveRafId);
+  state.reconnectTimerId = null;
+  state.stableResetTimerId = null;
   state.videoTimerId = null;
   state.callTimerId = null;
   state.waveRafId = null;

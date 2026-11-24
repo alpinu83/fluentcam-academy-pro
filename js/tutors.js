@@ -244,7 +244,7 @@ You are teaching a live 1-on-1 English SPEAKING class to a Korean student named 
 4. show_pop_quiz(question, options, correctIndex, explanation): Pop up a quick 3-option check once or twice per lesson.
 5. set_tutor_expression(mood, gesture): React warmly with "thumbup" or "handup".
 6. adjust_speaking_pace(pace, reason): Call whenever you slow down or speed up your voice in response to the student's comprehension or request!
-(Note: Tool responses may include a silent \`liveCoachingSnapshot\` with the student's real-time avg words/turn and question count—use it silently to adjust your coaching without ever mentioning numbers or metrics aloud.)
+(Note: Tool responses may include a brief silent \`coachNote\` string—use it silently to adjust your coaching without ever mentioning it aloud.)
 
 [Student Level Guidance]
 ${level.prompt}

@@ -476,11 +476,12 @@
               </div>
 
               <div class="field-group">
-                <label for="videoIntervalSelect">웹캠 화면 AI 전송 주기</label>
+                <label for="videoIntervalSelect">웹캠 화면 AI 전송 주기 (아이패드 1011 끊김 방지)</label>
                 <select id="videoIntervalSelect" class="select-input">
-                  <option value="1200" selected>1.2초마다 (자연스러운 화상 반응)</option>
+                  <option value="0" selected>수동 스냅샷만 (권장 · 아이패드/1011 끊김 방지)</option>
+                  <option value="3500">3.5초마다 (안정 저부하 화상 반응)</option>
                   <option value="2500">2.5초마다 (토큰 절약 모드)</option>
-                  <option value="0">자동 전송 끄기 (수동 스냅샷만)</option>
+                  <option value="1200">1.2초마다 (PC 전용 고속 화상)</option>
                 </select>
               </div>
 
@@ -1046,6 +1047,6 @@
     <canvas id="captureCanvas" class="hidden"></canvas>
   </div>
 
-  <script type="module" src="js/app.js?v=20261124b"></script>
+  <script type="module" src="js/app.js?v=20261124c"></script>
 </body>
 </html>

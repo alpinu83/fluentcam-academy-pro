@@ -55,7 +55,12 @@ export class PcmAudioPlayer {
       this.analyser.connect(externalTarget.destinationNode);
     } else {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      this.ctx = new AudioCtx({ sampleRate: 24000 });
+      try {
+        this.ctx = new AudioCtx({ sampleRate: 24000 });
+      } catch {
+        // iPadOS / older Safari may reject custom sampleRate; createBuffer(1, len, 24000) resamples cleanly
+        this.ctx = new AudioCtx();
+      }
       this.ownsCtx = true;
       this.gainNode = this.ctx.createGain();
       this.analyser = this.ctx.createAnalyser();
@@ -176,6 +181,8 @@ export class GeminiLiveClient {
     this.callbacks = callbacks;
     this.isSetupComplete = false;
     this.closedByUser = false;
+    this.activeModel = '';
+    this.resumptionHandle = null;
   }
 
   connect({
@@ -186,10 +193,24 @@ export class GeminiLiveClient {
     tools = [],
     strictNoiseGuard = false,
     silenceDurationMs = 2400,
+    resumptionHandle = null,
   }) {
     return new Promise((resolve, reject) => {
+      // Cleanly close any previous socket without triggering stale close callbacks
+      if (this.ws) {
+        const old = this.ws;
+        this.ws = null;
+        old.onopen = old.onmessage = old.onerror = old.onclose = null;
+        try {
+          old.close(1000, 'Reconnecting');
+        } catch {
+          // ignore
+        }
+      }
+
       this.closedByUser = false;
       this.isSetupComplete = false;
+      this.activeModel = String(model || '').replace(/^models\//, '');
 
       const cleanKey = apiKey.trim();
       const modelPath = model.startsWith('models/') ? model : `models/${model}`;
@@ -203,12 +224,19 @@ export class GeminiLiveClient {
       const setupTimeout = setTimeout(() => {
         if (!settled) {
           settled = true;
-          ws.close();
-          reject(new Error('Gemini Live 세션 응답 시간이 초과되었습니다. API 키와 모델 이름을 확인해 주세요.'));
+          try {
+            ws.close();
+          } catch {
+            // ignore
+          }
+          const err = new Error('Gemini Live 세션 응답 시간이 초과되었습니다. API 키와 모델 이름을 확인해 주세요.');
+          err.code = 408;
+          reject(err);
         }
       }, 15000);
 
       ws.onopen = () => {
+        if (this.ws !== ws) return;
         const setupObj = {
           model: modelPath,
           generationConfig: {
@@ -233,6 +261,7 @@ export class GeminiLiveClient {
             },
             activityHandling: strictNoiseGuard ? 'NO_INTERRUPTION' : 'START_OF_ACTIVITY_INTERRUPTS',
           },
+          sessionResumption: resumptionHandle ? { handle: resumptionHandle } : {},
           contextWindowCompression: {
             slidingWindow: {},
           },
@@ -248,6 +277,7 @@ export class GeminiLiveClient {
       };
 
       ws.onmessage = async (event) => {
+        if (this.ws !== ws) return;
         try {
           let rawText = '';
           if (typeof event.data === 'string') {
@@ -271,6 +301,22 @@ export class GeminiLiveClient {
             }
             this.callbacks.onSetupComplete?.();
             return;
+          }
+
+          // Track session resumption token for seamless 10-min / Wi-Fi reconnects
+          const sru = msg.sessionResumptionUpdate || msg.session_resumption_update;
+          if (sru) {
+            const nextHandle = sru.newHandle || sru.new_handle;
+            if (nextHandle) {
+              this.resumptionHandle = nextHandle;
+              this.callbacks.onResumptionUpdate?.(nextHandle, Boolean(sru.resumable));
+            }
+          }
+
+          // Server proactive disconnect warning (~60s before 10-min limit)
+          const goAway = msg.goAway || msg.go_away;
+          if (goAway) {
+            this.callbacks.onGoAway?.(goAway);
           }
 
           // Native Tool Calls
@@ -341,30 +387,36 @@ export class GeminiLiveClient {
       };
 
       ws.onerror = () => {
+        if (this.ws !== ws) return;
         if (!settled) {
           settled = true;
           clearTimeout(setupTimeout);
-          reject(new Error('Gemini Live WebSocket 연결에 실패했습니다. 네트워크 또는 API 키를 확인해 주세요.'));
+          const err = new Error('Gemini Live WebSocket 연결에 실패했습니다. 네트워크 또는 API 키를 확인해 주세요.');
+          err.code = 1006;
+          reject(err);
         } else {
           this.callbacks.onError?.(new Error('실시간 연결 중 네트워크 오류가 발생했습니다.'));
         }
       };
 
       ws.onclose = (ev) => {
+        if (this.ws !== ws) return;
         clearTimeout(setupTimeout);
+        this.isSetupComplete = false;
         const reasonText = ev.reason ? ` (${ev.reason})` : '';
         if (!settled) {
           settled = true;
-          reject(
-            new Error(
-              `연결이 종료되었습니다 [코드 ${ev.code}]${reasonText}. 선택한 Live 모델이 API 키에서 지원되는지 확인해 주세요.`
-            )
+          const err = new Error(
+            `연결이 종료되었습니다 [코드 ${ev.code}]${reasonText}. 선택한 Live 모델이 API 키에서 지원되는지 확인해 주세요.`
           );
+          err.code = ev.code;
+          err.reason = ev.reason || '';
+          reject(err);
           return;
         }
         this.callbacks.onClose?.({
           code: ev.code,
-          reason: ev.reason,
+          reason: ev.reason || '',
           closedByUser: this.closedByUser,
         });
       };
@@ -378,6 +430,8 @@ export class GeminiLiveClient {
 
   sendAudioPcmBuffer(arrayBuffer) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isSetupComplete) return;
+    // Skip frame if socket buffer is severely backed up (e.g. mobile Wi-Fi stall)
+    if (this.ws.bufferedAmount > 256 * 1024) return;
     const base64 = arrayBufferToBase64(arrayBuffer);
     this.ws.send(
       JSON.stringify({
@@ -404,6 +458,8 @@ export class GeminiLiveClient {
 
   sendVideoFrameBase64(jpegBase64) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isSetupComplete) return;
+    // Backpressure guard: drop video frame whenever WebSocket send queue is busy (prevents iPad 1011 stalls)
+    if (this.ws.bufferedAmount > 96 * 1024) return;
     this.ws.send(
       JSON.stringify({
         realtimeInput: {
@@ -418,6 +474,17 @@ export class GeminiLiveClient {
 
   sendTextTurn(text) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isSetupComplete) return;
+    // gemini-3.1-flash-live-preview expects realtimeInput.text when using realtime audio+tools
+    if (this.activeModel.includes('3.1-flash-live')) {
+      this.ws.send(
+        JSON.stringify({
+          realtimeInput: {
+            text,
+          },
+        })
+      );
+      return;
+    }
     this.ws.send(
       JSON.stringify({
         clientContent: {
@@ -431,13 +498,16 @@ export class GeminiLiveClient {
   disconnect() {
     this.closedByUser = true;
     this.isSetupComplete = false;
+    this.resumptionHandle = null;
     if (this.ws) {
+      const ws = this.ws;
+      this.ws = null;
+      ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
       try {
-        this.ws.close(1000, 'User ended call');
+        ws.close(1000, 'User ended call');
       } catch {
         // ignore
       }
-      this.ws = null;
     }
   }
 }
