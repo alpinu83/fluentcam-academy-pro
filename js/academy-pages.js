@@ -1,5 +1,5 @@
 import { getAllTextbooks } from './textbooks.js?v=20261124d';
-import { LEVELS, STUDENT_PRESETS } from './tutors.js?v=20261124d';
+import { LEVELS, STUDENT_PRESETS } from './tutors.js?v=20261125b';
 import { LEVEL_TEST_QUESTIONS, evaluateLevelTest } from './level-test.js';
 import {
   RATING,
@@ -405,7 +405,11 @@ export function createAcademyPages({
 
   function renderDashboardChart(sessions) {
     const wrap = document.getElementById('dashChartWrap');
-    const recent = [...sessions].slice(0, 8).reverse();
+    // Only lessons with a real AI-analyzed score are plotted (no made-up default values)
+    const recent = [...sessions]
+      .filter((s) => Number.isFinite(Number(s.report?.scores?.fluency)) && Number(s.report?.scores?.fluency) > 0)
+      .slice(0, 8)
+      .reverse();
     if (recent.length === 0) {
       wrap.innerHTML =
         '<div class="dash-chart-empty">아직 완료된 수업 데이터가 없습니다.<br/>첫 화상영어 수업을 마치면 유창성·자연스러움·어휘력 성장 그래프가 자동으로 그려집니다!</div>';
@@ -441,7 +445,7 @@ export function createAcademyPages({
 
     const paths = series
       .map((s) => {
-        const pts = recent.map((sess, i) => [getX(i), getY(sess.report?.scores?.[s.key] ?? 75)]);
+        const pts = recent.map((sess, i) => [getX(i), getY(Number(sess.report?.scores?.[s.key]) || Number(sess.report?.scores?.fluency) || 60)]);
         const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
         const circles = pts
           .map((p) => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="4" fill="${s.color}" />`)

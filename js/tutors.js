@@ -1,5 +1,5 @@
 import { formatTextbookForPrompt } from './textbooks.js?v=20261124d';
-import { SPEAKING_FOCUS_MODES } from './speaking-coach.js?v=20261124b';
+import { SPEAKING_FOCUS_MODES } from './speaking-coach.js?v=20261125b';
 
 export const TUTORS = [
   {
@@ -158,6 +158,67 @@ export const CORRECTION_MODES = {
   },
 };
 
+/**
+ * Picks today's 3 "Lesson Mission" target expressions from the textbook
+ * (sentence patterns first, then key vocabulary), so the tutor can recycle them
+ * on purpose and check them in an exit ticket.
+ */
+export function pickLessonTargets(textbook, max = 3) {
+  if (!textbook || !Array.isArray(textbook.pages)) return [];
+  const patterns = [];
+  const words = [];
+  for (const p of textbook.pages) {
+    if (Array.isArray(p.patterns)) {
+      for (const pt of p.patterns) {
+        const en = String(pt?.en || '').trim();
+        if (en) patterns.push(en);
+      }
+    }
+    if (Array.isArray(p.vocab)) {
+      for (const v of p.vocab) {
+        const w = String(v?.word || '').trim();
+        if (w) words.push(w);
+      }
+    }
+  }
+  const out = [];
+  for (const item of [...patterns.slice(0, 2), ...words]) {
+    if (out.length >= max) break;
+    if (!out.some((x) => x.toLowerCase() === item.toLowerCase())) out.push(item);
+  }
+  return out;
+}
+
+/** Words that help Gemini's speech recognition hear the child correctly (names + lesson vocabulary). */
+export function buildTranscriptionVocabulary({ textbook, studentName, tutor, reviewPhrases = [] }) {
+  const set = new Set();
+  const add = (s) => {
+    const clean = String(s || '').trim();
+    if (clean && clean.length <= 60 && !/[\u3131-\uD79D]/.test(clean)) set.add(clean);
+  };
+  add(studentName);
+  add(tutor?.name);
+  if (textbook && Array.isArray(textbook.pages)) {
+    for (const p of textbook.pages) {
+      (p.vocab || []).forEach((v) => add(v?.word));
+      (p.menuItems || []).forEach((m) => add(m?.name));
+    }
+  }
+  reviewPhrases.forEach((r) => add(r?.front || r));
+  return [...set].slice(0, 60);
+}
+
+const TEACHER_HEART = `[YOUR TEACHER'S HEART — WHO YOU ARE IN EVERY SECOND OF CLASS]
+You are not a chatbot. You are this child's real English teacher, and you passionately want THIS student to leave today's class speaking better than when they came in. You believe they can do it, and you show it.
+- High expectations + warm heart: you never accept "good enough" when the child can do better, and you never make them feel bad for trying.
+- Specific praise only: name exactly what they did well ("You used 'because' all by yourself!"), never empty "Good job!" or "Perfect!".
+- Growth language: mistakes are "brain-growing moments". Say "not yet" instead of "wrong". Point out progress compared with earlier in class or last class.
+- Real wait time: after you ask a question, stay silent and let them think. Silence is not a problem; rescuing them too fast is.
+- Prompt before you recast: when they make an error, FIRST help them fix it themselves (a clue, "Again?", "Yesterday I...?", a two-choice option). Only give the full correct sentence if they still can't, and then have them say it.
+- Never do the talking for them: scaffold, don't answer. Give a sentence starter, not the full sentence.
+- Check understanding by having them SHOW it (answer, explain, use it), never by asking "Do you understand?".
+- Energy and joy: smile in your voice, react to their ideas with real curiosity, and make them feel heard.`;
+
 export function buildSystemInstruction({
   tutor,
   studentName,
@@ -169,6 +230,8 @@ export function buildSystemInstruction({
   activePageIdx,
   customTopic,
   learnerMemoryBlock = '',
+  lessonTargets = [],
+  lessonMinutes = 20,
 }) {
   const level = LEVELS[levelKey] || LEVELS.elem3_mid;
   const correction = CORRECTION_MODES[correctionKey] || CORRECTION_MODES.gentle;
@@ -181,8 +244,21 @@ export function buildSystemInstruction({
     : `\n[Free Talk Session (No Textbook)]
 ${customTopic && customTopic.trim() ? `Requested topic: ${customTopic.trim()}` : 'Chat freely about school, friends, hobbies, favorite foods, books, games, or weekend plans! Keep it fun and age-appropriate.'}`;
 
+  const targets = Array.isArray(lessonTargets) ? lessonTargets.filter(Boolean).slice(0, 3) : [];
+  const missionBlock = targets.length
+    ? `\n[TODAY'S LESSON MISSION — 3 TARGET EXPRESSIONS]
+${targets.map((t, i) => `${i + 1}. "${t}"`).join('\n')}
+- In the warm-up, tell the student in one fun sentence that today's mission is to USE these in their own sentences (write the first one on the whiteboard).
+- Recycle each target at least 3 times across the lesson in different situations, and get the STUDENT to say it, not just hear it.
+- Exit ticket (last 2–3 minutes, or when you get a [CLASS TIMER] cue): ask the student to make one personal sentence with each target. Award a gold star for each one they produce on their own.`
+    : `\n[TODAY'S LESSON MISSION]
+In the warm-up, choose 2–3 useful expressions that fit today's topic, recycle them on purpose, and check them in a short exit ticket at the end (the student makes one personal sentence with each).`;
+
   return `${tutor.personaPrompt}
-Student: "${displayName}" (${level.ageContext}). Live 1-on-1 English SPEAKING class.
+Student: "${displayName}" (${level.ageContext}). Live 1-on-1 English SPEAKING class, about ${lessonMinutes} minutes.
+RESPOND IN ENGLISH. YOU MUST RESPOND UNMISTAKABLY IN ENGLISH. (Exception: at most 3 Korean words as a tiny hint, only after the student is stuck twice.)
+
+${TEACHER_HEART}
 
 [ESL SPEAKING COACH RULES — HIGH PRIORITY]
 1. NEVER lecture like a chatbot. 70/30 rule: student talks ~70%, you talk ~30%. Keep EVERY turn to **1–2 short spoken sentences (<25 words)** ending with ONE clear question/prompt, then STOP and wait!
@@ -192,10 +268,12 @@ Student: "${displayName}" (${level.ageContext}). Live 1-on-1 English SPEAKING cl
    - Do NOT advance until they try it! Once they nail it, celebrate + award_gold_star, then ask 1 fresh Transfer Question using that same pattern. (If stuck on try #2, split into a 3-word echo chunk.)
 4. DRAW OUT MORE SPEAKING: Upgrade 1–3 word replies into full sentences first. After 1 good sentence, dig deeper with 1–2 follow-ups (Why? Who? What happened next? Own example?).
 5. TWO-WAY REVERSE QUESTIONS: Every 3–4 turns, invite the student to ask YOU a question in English ("Now ask ME a question!"), giving a chalkboard starter if needed.
-6. 4-PHASE ARC: (1) Warm-up + weave in 1–2 Learner Memory phrases (2–3m) → (2) Core practice w/ Repair+Transfer → (3) Roleplay/2-way questions → (4) 30-sec student recap.
+6. 4-PHASE ARC: (1) Warm-up + Lesson Mission + 1–2 Learner Memory phrases (2–3m) → (2) Core practice w/ Repair+Transfer → (3) Roleplay/2-way questions → (4) Exit ticket: student uses each target expression + 30-sec student recap of what they learned.
 7. ADAPTIVE PACE: ${pace.prompt} If student says "too fast / slower / what? / 좀 빨라요" or hesitates repeatedly, IMMEDIATELY slow down, enunciate clearly, AND call adjust_speaking_pace(pace="slow", reason="...").
 8. NOISE & IMMERSION: Ignore background clicks/coughs/TV. No hint buttons exist—use clear English rephrasing + chalkboard (tiny Korean word only if totally stuck). No markdown/emojis in speech.
 9. FOCUS & REDIRECTION: If the student fools around, goes off-topic in Korean, or you receive a [CLASSROOM MONITOR] alert (left screen, stepped away, looking away, long silence), NEVER ignore it—call them by name warmly yet firmly ("Eyes on me!", "Let's focus!"), bring them back to class in 1 short sentence, and re-engage them with an easy 2-choice question or quick Gold Star challenge.
+10. APP CUES: Messages in [SQUARE BRACKETS] (e.g. [Lesson Page Sync], [CLASS TIMER], [Pop Quiz Answer], [CLASSROOM MONITOR]) come from the classroom app, not the student. Act on them naturally without reading them aloud.
+11. AFTER A CONNECTION BLIP: continue exactly where you were in one short sentence. Never restart the lesson or re-introduce yourself.
 
 [Tools]
 - award_gold_star: Only when genuinely earned (full sentence, fixed mistake, transfer drill, great question).
@@ -206,5 +284,5 @@ Student: "${displayName}" (${level.ageContext}). Live 1-on-1 English SPEAKING cl
 
 [Level] ${level.prompt}
 [Focus] ${focus.prompt}
-[Correction] ${correction.prompt}${learnerMemoryBlock}${textbookBlock}`;
+[Correction] ${correction.prompt}${missionBlock}${learnerMemoryBlock}${textbookBlock}`;
 }

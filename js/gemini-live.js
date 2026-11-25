@@ -183,6 +183,13 @@ export class GeminiLiveClient {
     this.closedByUser = false;
     this.activeModel = '';
     this.resumptionHandle = null;
+    this.resumptionUpdatedAt = 0;
+    this.resumptionModel = '';
+    this.nonBlockingTools = false;
+  }
+
+  isOpen() {
+    return Boolean(this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete);
   }
 
   connect({
@@ -194,6 +201,8 @@ export class GeminiLiveClient {
     strictNoiseGuard = false,
     silenceDurationMs = 2400,
     resumptionHandle = null,
+    customVocabulary = [],
+    nonBlockingTools = false,
   }) {
     return new Promise((resolve, reject) => {
       // Cleanly close any previous socket without triggering stale close callbacks
@@ -211,6 +220,7 @@ export class GeminiLiveClient {
       this.closedByUser = false;
       this.isSetupComplete = false;
       this.activeModel = String(model || '').replace(/^models\//, '');
+      this.nonBlockingTools = Boolean(nonBlockingTools);
 
       const cleanKey = apiKey.trim();
       const modelPath = model.startsWith('models/') ? model : `models/${model}`;
@@ -219,6 +229,8 @@ export class GeminiLiveClient {
 
       let settled = false;
       const ws = new WebSocket(url);
+      // ArrayBuffer frames decode synchronously, so audio chunks are always handled strictly in order
+      ws.binaryType = 'arraybuffer';
       this.ws = ws;
 
       const setupTimeout = setTimeout(() => {
@@ -262,13 +274,18 @@ export class GeminiLiveClient {
             activityHandling: strictNoiseGuard ? 'NO_INTERRUPTION' : 'START_OF_ACTIVITY_INTERRUPTS',
           },
           sessionResumption: resumptionHandle ? { handle: resumptionHandle } : {},
+          // Keeps roughly the last 8-10 minutes of the lesson in the tutor's working memory
+          // (24k/12k made the teacher forget corrections from a few minutes earlier).
           contextWindowCompression: {
-            triggerTokens: '24000',
+            triggerTokens: '32000',
             slidingWindow: {
-              targetTokens: '12000',
+              targetTokens: '16000',
             },
           },
-          inputAudioTranscription: {},
+          inputAudioTranscription:
+            Array.isArray(customVocabulary) && customVocabulary.length > 0
+              ? { customVocabulary: customVocabulary.slice(0, 100) }
+              : {},
           outputAudioTranscription: {},
         };
 
@@ -312,6 +329,8 @@ export class GeminiLiveClient {
             const nextHandle = sru.newHandle || sru.new_handle;
             if (nextHandle) {
               this.resumptionHandle = nextHandle;
+              this.resumptionUpdatedAt = Date.now();
+              this.resumptionModel = this.activeModel;
               this.callbacks.onResumptionUpdate?.(nextHandle, Boolean(sru.resumable));
             }
           }
@@ -337,6 +356,13 @@ export class GeminiLiveClient {
                   }
                 } catch (toolErr) {
                   result = { ok: false, error: toolErr.message };
+                }
+                if (this.nonBlockingTools) {
+                  // NON_BLOCKING tools (required by extended-thinking): never interrupt the tutor mid-sentence
+                  result = { scheduling: 'SILENT', ...result };
+                } else if (result && 'scheduling' in result) {
+                  const { scheduling, ...rest } = result;
+                  result = rest;
                 }
                 responses.push({
                   id: fnCall.id,
@@ -480,8 +506,10 @@ export class GeminiLiveClient {
 
   sendTextTurn(text) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isSetupComplete) return;
-    // gemini-3.1-flash-live-preview expects realtimeInput.text when using realtime audio+tools
-    if (this.activeModel.includes('3.1-flash-live')) {
+    // Gemini 3.x Live: clientContent with turnComplete=true UNCONDITIONALLY interrupts the tutor's
+    // current speech, so app cues (page sync, quiz answers, focus nudges) go through realtimeInput.text.
+    // Only the legacy 2.5 native-audio model still needs clientContent turns.
+    if (!/2\.5|native-audio/.test(this.activeModel)) {
       this.ws.send(
         JSON.stringify({
           realtimeInput: {

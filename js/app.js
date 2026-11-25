@@ -5,13 +5,16 @@ import {
   LEVELS,
   CORRECTION_MODES,
   buildSystemInstruction,
-} from './tutors.js?v=20261124g';
+  pickLessonTargets,
+  buildTranscriptionVocabulary,
+} from './tutors.js?v=20261125b';
 import {
   SPEAKING_FOCUS_MODES,
   analyzeConversationSpeaking,
   buildLearnerMemory,
   buildMidCallCoachFeedback,
-} from './speaking-coach.js?v=20261124b';
+  trackTargetUsage,
+} from './speaking-coach.js?v=20261125b';
 import {
   getAllTextbooks,
   formatSingleTextbookPage,
@@ -20,17 +23,17 @@ import {
   saveCustomAiTextbook,
   deleteCustomAiTextbook,
 } from './textbooks.js?v=20261124d';
-import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js?v=20261124e';
+import { GeminiLiveClient, PcmAudioPlayer } from './gemini-live.js?v=20261125b';
 import { Avatar3DController } from './avatar-3d.js';
 import { buildClassroomToolDeclarations, playRewardChime } from './classroom-tools.js';
 import { ClassroomWhiteboard } from './whiteboard.js';
 import { loadFsrsDeck, ingestLessonIntoFsrsDeck } from './fsrs.js';
-import { createAcademyPages } from './academy-pages.js?v=20261124d';
+import { createAcademyPages } from './academy-pages.js?v=20261125b';
 import {
   generateAiTextbook,
   generateStudyReport,
   reportToMarkdown,
-} from './feedback.js?v=20261124g';
+} from './feedback.js?v=20261125b';
 import {
   DEFAULT_SYNC_REPO,
   cleanGitHubToken,
@@ -204,6 +207,19 @@ const state = {
   stableResetTimerId: null,
   pendingGoAwayRotation: false,
   activeCallConfig: null,
+  goAwayTimerId: null,
+  skipResumeHandleOnce: false,
+  waitingForNetwork: false,
+
+  // App -> tutor cue queue (never talk over / cut off the tutor mid-sentence)
+  pendingTutorCues: [],
+  cueQueuedAt: 0,
+  cueFlushTimerId: null,
+  tutorTurnActive: false,
+
+  // Lesson Mission (3 target expressions) & class timer
+  lessonTargets: [],
+  wrapUpCueSent: false,
 
   // Live Classroom Metrics & Tools
   studentSpeakingMs: 0,
@@ -1412,7 +1428,7 @@ function renderActiveCallBookPage({ notifyTutor = false } = {}) {
     btn.addEventListener('click', () => {
       const word = btn.dataset.askWord;
       if (!state.inCall || !word) return;
-      state.liveClient?.sendTextTurn(
+      sendTutorCue(
         `I clicked the word "${word}" in our textbook! Could you pronounce it clearly and ask me to make a short sentence with it?`
       );
       showToast(`"${word}" 단어 발음·연습을 선생님께 요청했어요!`);
@@ -1441,7 +1457,7 @@ function renderActiveCallBookPage({ notifyTutor = false } = {}) {
 
   if (notifyTutor && state.inCall) {
     const pageDetail = formatSingleTextbookPage(page, idx + 1);
-    state.liveClient?.sendTextTurn(
+    sendTutorCue(
       `[Lesson Page Sync] I turned our textbook to Page ${idx + 1}. Practice this page now:\n${pageDetail}`
     );
     showToast(`교재 ${idx + 1}쪽으로 이동했어요 — AI 선생님 화면과 동기화됨`);
@@ -1506,7 +1522,7 @@ function showPopQuiz({ question, options = [], correctIndex = 0, explanation = '
         state.avatar3d?.playGesture('thumbup', 2.2);
       }
 
-      state.liveClient?.sendTextTurn(
+      sendTutorCue(
         `[Pop Quiz Answer] I picked "${options[picked] || ''}" (${isRight ? 'Correct!' : `Incorrect, correct answer was "${options[correctIndex] || ''}"`}).`
       );
     });
@@ -1522,10 +1538,51 @@ function updateCallPaceUI(paceKey) {
   el.callPaceBadge.classList.toggle('is-slow', valid === 'slow');
 }
 
+// ==================== APP -> TUTOR CUE QUEUE ====================
+// App-generated messages (page sync, quiz answers, focus nudges, class timer) are held until the
+// tutor finishes speaking, so the teacher is never cut off mid-sentence. Safety: sent after 12s anyway.
+function isTutorBusy() {
+  return Boolean(state.audioPlayer?.isSpeaking || state.tutorTurnActive);
+}
+
+function scheduleCueFlush(delayMs = 450) {
+  if (state.cueFlushTimerId) clearTimeout(state.cueFlushTimerId);
+  state.cueFlushTimerId = setTimeout(flushTutorCues, delayMs);
+}
+
+function flushTutorCues() {
+  state.cueFlushTimerId = null;
+  if (!state.inCall || !state.liveClient || state.pendingTutorCues.length === 0) return;
+  if (state.isReconnecting || state.waitingForNetwork || !state.liveClient.isOpen()) {
+    scheduleCueFlush(1500);
+    return;
+  }
+  if (isTutorBusy() && Date.now() - state.cueQueuedAt < 12000) {
+    scheduleCueFlush(900);
+    return;
+  }
+  const text = state.pendingTutorCues.splice(0).join('\n');
+  state.liveClient.sendTextTurn(text);
+}
+
+function sendTutorCue(text, { urgent = false } = {}) {
+  if (!state.inCall || !state.liveClient || !text) return;
+  const canSendNow =
+    !state.isReconnecting && !state.waitingForNetwork && state.liveClient.isOpen() && (urgent || !isTutorBusy());
+  if (canSendNow && state.pendingTutorCues.length === 0) {
+    state.liveClient.sendTextTurn(text);
+    return;
+  }
+  if (state.pendingTutorCues.length === 0) state.cueQueuedAt = Date.now();
+  state.pendingTutorCues.push(text);
+  if (state.pendingTutorCues.length > 4) state.pendingTutorCues.splice(0, state.pendingTutorCues.length - 4);
+  scheduleCueFlush(urgent ? 200 : 900);
+}
+
 async function handleGeminiToolCall(fnCall) {
   const name = fnCall.name;
   const args = fnCall.args || {};
-  const coachSnap = buildMidCallCoachFeedback(state.transcript);
+  const coachSnap = buildMidCallCoachFeedback(state.transcript, state.lessonTargets);
   const coachNote =
     coachSnap && coachSnap.studentTurns >= 2 && coachSnap.coachTip ? coachSnap.coachTip : '';
 
@@ -1538,6 +1595,7 @@ async function handleGeminiToolCall(fnCall) {
     showToast(`선생님이 교재를 ${targetIdx + 1}쪽으로 넘겼어요!`);
     return {
       ok: true,
+      scheduling: 'WHEN_IDLE',
       currentPage: targetIdx + 1,
       heading: book.pages[targetIdx].heading,
       pageContent: formatSingleTextbookPage(book.pages[targetIdx], targetIdx + 1),
@@ -1853,6 +1911,12 @@ async function startCall() {
     state.sessionWhiteboardNotes = [];
     state.activeCallTextbook = textbook;
     state.activeCallPageIdx = 0;
+    state.lessonTargets = pickLessonTargets(textbook);
+    state.wrapUpCueSent = false;
+    state.pendingTutorCues = [];
+    state.tutorTurnActive = false;
+    state.waitingForNetwork = false;
+    state.skipResumeHandleOnce = false;
 
     switchView('call');
     el.callTutorImg.src = tutor.avatar;
@@ -1914,6 +1978,7 @@ async function startCall() {
       state.focusGuard?.notifyTutorSpeaking(isSpeaking);
       if (state.inCall) {
         el.callTutorState.textContent = isSpeaking ? '말하는 중...' : '듣고 있어요';
+        if (!isSpeaking && state.pendingTutorCues.length) scheduleCueFlush(450);
       }
     });
     await state.audioPlayer.init(externalAudioTarget);
@@ -1937,6 +2002,8 @@ async function startCall() {
       activePageIdx: 0,
       customTopic: state.customTopic,
       learnerMemoryBlock: learnerMemory.promptBlock,
+      lessonTargets: state.lessonTargets,
+      lessonMinutes: LESSON_TARGET_MIN,
     });
 
     const turnWaitCfg = TURN_WAIT_CONFIG[state.turnWaitMode] || TURN_WAIT_CONFIG.patient;
@@ -1956,11 +2023,22 @@ async function startCall() {
       strictNoiseGuard: state.noiseSensitivity === 'high',
       silenceDurationMs: turnWaitCfg.ms,
       isIpadOrIos,
+      customVocabulary: buildTranscriptionVocabulary({
+        textbook,
+        studentName,
+        tutor,
+        reviewPhrases: learnerMemory.reviewPhrases,
+      }),
+      vocabRejected: false,
     };
 
     state.liveClient = new GeminiLiveClient({
-      onAudioChunk: (b64, sampleRate) => state.audioPlayer?.enqueueBase64Pcm(b64, sampleRate),
+      onAudioChunk: (b64, sampleRate) => {
+        state.tutorTurnActive = true;
+        state.audioPlayer?.enqueueBase64Pcm(b64, sampleRate);
+      },
       onInterrupted: () => {
+        state.tutorTurnActive = false;
         state.audioPlayer?.interrupt();
         finalizeActiveTurns();
       },
@@ -1970,16 +2048,31 @@ async function startCall() {
       },
       onOutputTranscription: (text) => appendOrUpdateTurn('tutor', text),
       onTurnComplete: () => {
+        state.tutorTurnActive = false;
         finalizeActiveTurns();
         state.focusGuard?.notifyTurnComplete();
+        if (state.pendingTutorCues.length) scheduleCueFlush(450);
         if (state.pendingGoAwayRotation && state.inCall && !state.isReconnecting) {
           state.pendingGoAwayRotation = false;
           scheduleSeamlessReconnect({ code: 1000, reason: 'goAway', proactive: true });
         }
       },
-      onGoAway: () => {
-        // Server warns ~60s before 10-min limit: rotate smoothly on next idle turn
+      onGoAway: (goAway) => {
+        // Server warns before the ~10-min connection limit: rotate on the next idle turn,
+        // but ALWAYS before the deadline (waiting only for turnComplete let the socket die mid-sentence).
         state.pendingGoAwayRotation = true;
+        const leftMs = parseDurationMs(goAway?.timeLeft ?? goAway?.time_left, 20000);
+        if (state.goAwayTimerId) clearTimeout(state.goAwayTimerId);
+        state.goAwayTimerId = setTimeout(
+          () => {
+            state.goAwayTimerId = null;
+            if (state.pendingGoAwayRotation && state.inCall && !state.isReconnecting) {
+              state.pendingGoAwayRotation = false;
+              scheduleSeamlessReconnect({ code: 1000, reason: 'goAway', proactive: true });
+            }
+          },
+          isTutorBusy() ? Math.max(0, leftMs - 4000) : Math.min(1200, Math.max(0, leftMs - 4000))
+        );
       },
       onToolCall: handleGeminiToolCall,
       onError: () => {
@@ -2084,6 +2177,18 @@ async function startCall() {
     state.callTimerId = setInterval(() => {
       const elapsed = Math.floor((Date.now() - state.callStartMs) / 1000);
       el.callTimer.textContent = formatDuration(elapsed);
+      // Class timer: make sure every lesson ends with an exit ticket + recap (retrieval practice)
+      if (!state.wrapUpCueSent && elapsed >= (LESSON_TARGET_MIN - 4) * 60) {
+        state.wrapUpCueSent = true;
+        const usage = state.lessonTargets.length ? trackTargetUsage(state.transcript, state.lessonTargets) : null;
+        const remainingNote =
+          usage && usage.remaining.length
+            ? ` Targets the student has NOT said yet: ${usage.remaining.map((t) => `"${t}"`).join(', ')}.`
+            : '';
+        sendTutorCue(
+          `[CLASS TIMER] About 4 minutes left in today's ${LESSON_TARGET_MIN}-minute class. Finish the current activity, then run the Exit Ticket: ask ${studentName} to make one personal sentence with each Lesson Mission expression, then a 30-second recap of what they learned today.${remainingNote} Keep teaching warmly until the student ends the call.`
+        );
+      }
     }, 1000);
 
     // Start Free On-Device Classroom Focus Guard + Real-Time Parent Presence
@@ -2140,12 +2245,22 @@ async function startCall() {
   }
 }
 
-// High-quality 3.x Free-Tier Live models only (never silently downgrade conversation quality to 2.5)
-const LIVE_MODEL_FALLBACKS = [
-  'gemini-3.8-live',
-  'gemini-3.1-flash-live-preview',
-  'gemini-3.8-live-extended-thinking',
-];
+// Automatic fallback order. gemini-3.8-live-extended-thinking is NOT used as an automatic fallback:
+// it needs NON_BLOCKING tools and has slower turn-taking (it is still selectable manually in Parent Admin).
+const LIVE_MODEL_FALLBACKS = ['gemini-3.8-live', 'gemini-3.1-flash-live-preview'];
+const LESSON_TARGET_MIN = 20;
+const RESUMPTION_HANDLE_TTL_MS = 2 * 60 * 60 * 1000; // Google: handles stay valid for 2h
+
+function parseDurationMs(value, fallbackMs) {
+  if (value == null) return fallbackMs;
+  if (typeof value === 'number') return value * 1000;
+  if (typeof value === 'object') {
+    const sec = Number(value.seconds || 0) + Number(value.nanos || 0) / 1e9;
+    return sec > 0 ? sec * 1000 : fallbackMs;
+  }
+  const n = parseFloat(String(value));
+  return Number.isFinite(n) && n > 0 ? n * 1000 : fallbackMs;
+}
 
 function isPermanentLiveError(reason = '') {
   const r = String(reason || '').toLowerCase();
@@ -2166,6 +2281,53 @@ function getOrderedLiveModelCandidates(preferredModel) {
   return [...new Set(list.filter(Boolean))];
 }
 
+function toolsForModel(tools, model) {
+  if (!Array.isArray(tools) || tools.length === 0) return tools;
+  if (!/extended-thinking/.test(model)) return tools;
+  // Extended Thinking only accepts asynchronous (NON_BLOCKING) function declarations
+  return tools.map((t) =>
+    Array.isArray(t.functionDeclarations)
+      ? { functionDeclarations: t.functionDeclarations.map((fd) => ({ ...fd, behavior: 'NON_BLOCKING' })) }
+      : t
+  );
+}
+
+function modelSupportsCustomVocabulary(model) {
+  return /^gemini-3\.8/.test(String(model || ''));
+}
+
+function buildConnectArgs(cfg, model, { systemInstruction = null, resumptionHandle = null } = {}) {
+  return {
+    apiKey: cfg.apiKey,
+    model,
+    voiceName: cfg.voiceName,
+    systemInstruction: systemInstruction || cfg.baseSystemInstruction,
+    tools: toolsForModel(cfg.tools, model),
+    strictNoiseGuard: cfg.strictNoiseGuard,
+    silenceDurationMs: cfg.silenceDurationMs,
+    resumptionHandle,
+    customVocabulary: modelSupportsCustomVocabulary(model) && !cfg.vocabRejected ? cfg.customVocabulary || [] : [],
+    nonBlockingTools: /extended-thinking/.test(model),
+  };
+}
+
+// Connects once; if the server rejects the optional transcription vocabulary, retries without it.
+async function connectLiveOnce(client, cfg, model, extra = {}) {
+  try {
+    await client.connect(buildConnectArgs(cfg, model, extra));
+  } catch (err) {
+    const usedVocab =
+      modelSupportsCustomVocabulary(model) && !cfg.vocabRejected && (cfg.customVocabulary || []).length > 0;
+    const detail = `${err?.reason || ''} ${err?.message || ''}`;
+    if (usedVocab && /vocabulary|unknown name/i.test(detail)) {
+      cfg.vocabRejected = true;
+      await client.connect(buildConnectArgs(cfg, model, extra));
+      return;
+    }
+    throw err;
+  }
+}
+
 function stopVideoAutoTimer() {
   if (state.videoTimerId) {
     clearInterval(state.videoTimerId);
@@ -2176,7 +2338,7 @@ function stopVideoAutoTimer() {
 function buildReconnectContinuityInstruction(baseInstruction) {
   const recent = state.transcript
     .filter((t) => t && t.text && t.text.trim())
-    .slice(-6)
+    .slice(-12)
     .map((t) => `${t.role === 'user' ? 'Student' : 'Tutor'}: ${t.text.trim()}`)
     .join('\n');
   const activeBook = state.activeCallTextbook;
@@ -2188,12 +2350,28 @@ function buildReconnectContinuityInstruction(baseInstruction) {
           : ''
       }`
     : '';
+  const mins = state.callStartMs ? Math.max(1, Math.round((Date.now() - state.callStartMs) / 60000)) : 0;
+  const boardNotes = state.sessionWhiteboardNotes
+    .slice(-4)
+    .map((n) => `"${n.englishSentence}"`)
+    .join(', ');
+  const usage = state.lessonTargets.length ? trackTargetUsage(state.transcript, state.lessonTargets) : null;
+  const progressLines = [
+    mins ? `- Class time so far: about ${mins} min of ${LESSON_TARGET_MIN}. Gold stars so far: ${state.sessionStarsEarned}.` : '',
+    boardNotes ? `- Already written on the whiteboard: ${boardNotes}` : '',
+    usage
+      ? `- Lesson Mission: student already said ${usage.used.length ? usage.used.map((t) => `"${t}"`).join(', ') : 'none yet'}; still to practice ${usage.remaining.length ? usage.remaining.map((t) => `"${t}"`).join(', ') : 'none (all done!)'}.`
+      : '',
+    state.wrapUpCueSent ? '- The class is in its final minutes: do the Exit Ticket and recap if not done yet.' : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
   return `${baseInstruction}
 
 [SEAMLESS RECONNECTION CONTEXT — DO NOT RESTART THE LESSON!]
-There was a brief 1-second network hiccup and you are right back in the middle of the live class!
+There was a brief network hiccup and you are right back in the middle of the live class!
 ${pageNote}
-${recent ? `Most recent conversation right before the blip:\n${recent}\n` : ''}
+${progressLines ? `Lesson progress:\n${progressLines}\n` : ''}${recent ? `Most recent conversation right before the blip:\n${recent}\n` : ''}
 Continue naturally right from where you left off in 1 short warm sentence (do NOT re-introduce yourself from scratch or apologize at length).`;
 }
 
@@ -2204,34 +2382,18 @@ async function connectLiveWithFallback({ client, cfg, preferredModel }) {
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];
     try {
-      await client.connect({
-        apiKey: cfg.apiKey,
-        model: candidate,
-        voiceName: cfg.voiceName,
-        systemInstruction: cfg.baseSystemInstruction,
-        tools: cfg.tools,
-        strictNoiseGuard: cfg.strictNoiseGuard,
-        silenceDurationMs: cfg.silenceDurationMs,
-      });
+      await connectLiveOnce(client, cfg, candidate);
       return candidate;
     } catch (err) {
       lastErr = err;
       if (isPermanentLiveError(err?.reason || err?.message)) {
         throw err;
       }
-      // Retry same model once on transient 1011 before falling over to backup Live model
+      // Retry same model once on transient 1011/1006 before falling over to the backup Live model
       if (i === 0 && (err?.code === 1011 || err?.code === 1006)) {
         await new Promise((r) => setTimeout(r, 1200));
         try {
-          await client.connect({
-            apiKey: cfg.apiKey,
-            model: candidate,
-            voiceName: cfg.voiceName,
-            systemInstruction: cfg.baseSystemInstruction,
-            tools: cfg.tools,
-            strictNoiseGuard: cfg.strictNoiseGuard,
-            silenceDurationMs: cfg.silenceDurationMs,
-          });
+          await connectLiveOnce(client, cfg, candidate);
           return candidate;
         } catch (retryErr) {
           lastErr = retryErr;
@@ -2257,10 +2419,42 @@ function handleUnexpectedLiveClose({ code, reason }) {
   scheduleSeamlessReconnect({ code, reason, proactive: false });
 }
 
+function getUsableResumptionHandle(model) {
+  const client = state.liveClient;
+  if (!client?.resumptionHandle) return null;
+  if (client.resumptionModel && client.resumptionModel !== model) return null;
+  if (Date.now() - (client.resumptionUpdatedAt || 0) > RESUMPTION_HANDLE_TTL_MS) return null;
+  return client.resumptionHandle;
+}
+
 function scheduleSeamlessReconnect({ code = 1011, reason = '', proactive = false } = {}) {
   if (!state.inCall || state.isReconnecting || !state.activeCallConfig) return;
 
-  const MAX_ATTEMPTS = 4;
+  finalizeActiveTurns();
+  state.audioPlayer?.interrupt();
+  state.tutorTurnActive = false;
+
+  // Wi-Fi is down: don't burn retry attempts. Wait for the 'online' event and resume then.
+  if (!proactive && typeof navigator !== 'undefined' && navigator.onLine === false) {
+    if (!state.waitingForNetwork) {
+      state.waitingForNetwork = true;
+      el.callTutorState.textContent = '인터넷 연결을 기다리는 중...';
+      showToast('와이파이가 끊겼어요. 인터넷이 돌아오면 수업을 자동으로 이어갈게요!', 4200);
+    }
+    // Fallback poll in case the browser never fires the 'online' event (seen on some iPads)
+    if (state.reconnectTimerId) clearTimeout(state.reconnectTimerId);
+    state.reconnectTimerId = setTimeout(() => {
+      state.reconnectTimerId = null;
+      if (state.inCall && state.waitingForNetwork) {
+        if (navigator.onLine !== false) state.waitingForNetwork = false;
+        scheduleSeamlessReconnect({ code, reason, proactive: false });
+      }
+    }, 5000);
+    return;
+  }
+  state.waitingForNetwork = false;
+
+  const MAX_ATTEMPTS = 6;
   if (!proactive && state.reconnectAttempts >= MAX_ATTEMPTS) {
     const modelTip =
       code === 1011
@@ -2274,8 +2468,6 @@ function scheduleSeamlessReconnect({ code = 1011, reason = '', proactive = false
   state.isReconnecting = true;
   if (!proactive) state.reconnectAttempts += 1;
   const attemptNum = state.reconnectAttempts;
-  finalizeActiveTurns();
-  state.audioPlayer?.interrupt();
 
   el.callTutorState.textContent = proactive
     ? '연결 새로고침 중...'
@@ -2285,7 +2477,7 @@ function scheduleSeamlessReconnect({ code = 1011, reason = '', proactive = false
   }
 
   // Wait ~1.5s after 1011 (immediate 0ms reconnect often gets another 1011 from Google's router)
-  const delayMs = proactive ? 250 : attemptNum === 1 ? 1500 : Math.min(4000, 1500 * attemptNum);
+  const delayMs = proactive ? 250 : attemptNum === 1 ? 1200 : Math.min(6000, 1500 * attemptNum);
 
   if (state.reconnectTimerId) clearTimeout(state.reconnectTimerId);
   state.reconnectTimerId = setTimeout(async () => {
@@ -2297,29 +2489,25 @@ function scheduleSeamlessReconnect({ code = 1011, reason = '', proactive = false
 
     const cfg = state.activeCallConfig;
     const candidates = getOrderedLiveModelCandidates(cfg.model);
-    // On 2nd+ 1011 retry, rotate to a backup Live model (e.g. 3.8-live <-> 3.1-flash-live-preview <-> 2.5-native-audio)
+    // On the 3rd+ consecutive 1011, rotate to the backup Live model
     const nextModel =
-      !proactive && code === 1011 && attemptNum >= 2
-        ? candidates[(attemptNum - 1) % candidates.length]
+      !proactive && code === 1011 && attemptNum >= 3
+        ? candidates[(attemptNum - 2) % candidates.length]
         : cfg.model;
 
-    // For proactive goAway rotation, try saved handle first; for 1011, always start fresh with transcript continuity
-    // (Google Live API can poison resumption handles after 1011!)
-    const useHandle = proactive && state.liveClient.resumptionHandle ? state.liveClient.resumptionHandle : null;
-    const reconnectInstruction = useHandle
+    // Session resumption keeps the tutor's full memory of the lesson. Use it for goAway rotations AND
+    // unexpected drops (Wi-Fi blips, 1006/1011). If resuming fails once, the next attempt rebuilds the
+    // context from the transcript instead.
+    const handle = state.skipResumeHandleOnce ? null : getUsableResumptionHandle(nextModel);
+    state.skipResumeHandleOnce = false;
+    const reconnectInstruction = handle
       ? cfg.baseSystemInstruction
       : buildReconnectContinuityInstruction(cfg.baseSystemInstruction);
 
     try {
-      await state.liveClient.connect({
-        apiKey: cfg.apiKey,
-        model: nextModel,
-        voiceName: cfg.voiceName,
+      await connectLiveOnce(state.liveClient, cfg, nextModel, {
         systemInstruction: reconnectInstruction,
-        tools: cfg.tools,
-        strictNoiseGuard: cfg.strictNoiseGuard,
-        silenceDurationMs: cfg.silenceDurationMs,
-        resumptionHandle: useHandle,
+        resumptionHandle: handle,
       });
 
       if (!state.inCall) return;
@@ -2342,13 +2530,13 @@ function scheduleSeamlessReconnect({ code = 1011, reason = '', proactive = false
             : '✅ 선생님과 다시 연결되었어요! 이어서 말해 보세요.',
           2800
         );
-        // Gently prompt tutor to pick right back up if we rebuilt context cleanly
-        if (!useHandle && state.transcript.length > 0) {
-          state.liveClient.sendTextTurn(
-            '(Connection briefly flickered and is back now. Smile warmly and continue right where we were in 1 short sentence!)'
-          );
-        }
       }
+      if ((!proactive || !handle) && state.transcript.length > 0) {
+        state.liveClient.sendTextTurn(
+          '[Connection restored] The connection briefly flickered and is back now. Smile warmly and continue right where we were in 1 short sentence!'
+        );
+      }
+      if (state.pendingTutorCues.length) scheduleCueFlush(1500);
 
       // Reset failure counter once connection stays healthy for 12s
       if (state.stableResetTimerId) clearTimeout(state.stableResetTimerId);
@@ -2360,7 +2548,13 @@ function scheduleSeamlessReconnect({ code = 1011, reason = '', proactive = false
     } catch (err) {
       state.isReconnecting = false;
       if (!state.inCall) return;
+      if (handle) state.skipResumeHandleOnce = true;
       if (isPermanentLiveError(err?.reason || err?.message)) {
+        if (handle) {
+          // An expired/invalid resumption handle can be rejected as INVALID_ARGUMENT: retry fresh
+          scheduleSeamlessReconnect({ code: err?.code || code, reason: '', proactive });
+          return;
+        }
         showToast(err.message || 'API 인증 오류가 발생했습니다.', 5000);
         endCall();
         return;
@@ -2369,6 +2563,14 @@ function scheduleSeamlessReconnect({ code = 1011, reason = '', proactive = false
     }
   }, delayMs);
 }
+
+window.addEventListener('online', () => {
+  if (state.inCall && state.waitingForNetwork) {
+    state.waitingForNetwork = false;
+    showToast('인터넷이 다시 연결됐어요. 수업을 이어갑니다!', 2600);
+    scheduleSeamlessReconnect({ code: 1006, reason: 'network-restored', proactive: false });
+  }
+});
 
 // ==================== CLASSROOM FOCUS GUARD & LIVE PARENT MONITOR ====================
 function showFocusAlertBanner({ type, title, detail }) {
@@ -2459,9 +2661,9 @@ function startClassroomFocusGuard({ studentName, tutor, topicLabel }) {
         );
       }
     },
-    onAiNudge: (promptText) => {
+    onAiNudge: (promptText, type) => {
       if (state.inCall && !state.isReconnecting && state.liveClient) {
-        state.liveClient.sendTextTurn(promptText);
+        sendTutorCue(promptText, { urgent: type === 'tab_away' });
       }
     },
   });
@@ -2522,6 +2724,14 @@ async function teardownCallResources() {
   state.pendingGoAwayRotation = false;
   state.reconnectAttempts = 0;
   state.activeCallConfig = null;
+  state.waitingForNetwork = false;
+  state.skipResumeHandleOnce = false;
+  state.pendingTutorCues = [];
+  state.tutorTurnActive = false;
+  if (state.goAwayTimerId) clearTimeout(state.goAwayTimerId);
+  if (state.cueFlushTimerId) clearTimeout(state.cueFlushTimerId);
+  state.goAwayTimerId = null;
+  state.cueFlushTimerId = null;
   state.pttPressed = false;
   if (state.reconnectTimerId) clearTimeout(state.reconnectTimerId);
   if (state.stableResetTimerId) clearTimeout(state.stableResetTimerId);
@@ -2588,6 +2798,8 @@ async function endCall() {
   const starsEarned = state.sessionStarsEarned;
   const whiteboardNotes = [...state.sessionWhiteboardNotes];
   const apiKey = el.apiKeyInput.value.trim();
+  const lessonTargets = [...state.lessonTargets];
+  const targetUsage = lessonTargets.length ? trackTargetUsage(cleanTranscript, lessonTargets) : null;
 
   await teardownCallResources();
 
@@ -2614,6 +2826,8 @@ async function endCall() {
       durationSec,
       speakingStats,
       focusStats,
+      lessonTargets,
+      targetUsage,
     });
   } catch (err) {
     console.error('Study report error:', err);
@@ -2621,8 +2835,8 @@ async function endCall() {
     reportData = {
       headline: `${studentName} 학생의 화상영어 수업 기록`,
       praiseBadge: '오늘도 영어 말하기 완주!',
-      summary: 'AI 리포트 생성 중 일시적인 오류가 발생했지만, 전체 대화 스크립트는 안전하게 저장되었습니다.',
-      scores: { fluency: 80, naturalness: 78, vocabulary: 76, engagement: 86 },
+      summary: 'AI 리포트 생성 중 일시적인 오류가 발생했지만, 전체 대화 스크립트는 안전하게 저장되었습니다. (점수는 분석이 완료된 수업에만 표시돼요.)',
+      scores: null,
       speakingWins: [],
       recurringHabits: [],
       corrections: [],
@@ -2657,6 +2871,8 @@ async function endCall() {
     starsEarned,
     speakingStats,
     focusStats,
+    lessonTargets,
+    targetUsage,
     transcript: cleanTranscript,
     report: reportData,
   };
@@ -2787,15 +3003,26 @@ function renderReportView(session) {
   const talkMeta = typeof session.studentTalkPct === 'number' ? ` · 학생 발화 비율 ${session.studentTalkPct}%` : '';
   el.reportHeadline.textContent = r.headline || `${session.topicLabel} 복습 리포트`;
   el.reportMetaLine.textContent = `${session.studentName || '학생'} (${session.levelLabel}) · ${session.tutorName} 선생님 · ${session.topicLabel} · ${session.durationLabel}${talkMeta} · ${dateStr}`;
-  el.reportSummaryText.textContent = r.summary || '';
+  el.reportSummaryText.style.whiteSpace = 'pre-line';
+  el.reportSummaryText.textContent = [
+    r.summary || '',
+    r.missionResult ? `🎯 오늘의 미션: ${r.missionResult}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   el.reportNextTopicText.textContent = r.nextTopic || '다음 수업에서 오늘 배운 표현을 2번 이상 직접 써보세요!';
 
   const scores = r.scores || {};
+  const toScore = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  };
+  // No fabricated defaults: a missing score is shown as "—" instead of a made-up number
   const scoreItems = [
-    { label: '유창성 (Fluency)', val: scores.fluency ?? 80 },
-    { label: '원어민 자연스러움 (Naturalness)', val: scores.naturalness ?? 78 },
-    { label: '어휘 다양성 (Vocabulary)', val: scores.vocabulary ?? 76 },
-    { label: '수업 참여도 (Engagement)', val: scores.engagement ?? 88 },
+    { label: '유창성 (Fluency)', val: toScore(scores.fluency) },
+    { label: '원어민 자연스러움 (Naturalness)', val: toScore(scores.naturalness) },
+    { label: '어휘 다양성 (Vocabulary)', val: toScore(scores.vocabulary) },
+    { label: '수업 참여도 (Engagement)', val: toScore(scores.engagement) },
   ];
   if (typeof session.studentTalkPct === 'number') {
     scoreItems.push({ label: '학생 발화 비중 (권장 50%+)', val: session.studentTalkPct });
@@ -2804,8 +3031,8 @@ function renderReportView(session) {
     .map(
       (s) => `
       <div>
-        <div class="score-row-head"><span>${s.label}</span><strong>${s.val} / 100</strong></div>
-        <div class="score-track"><div class="score-fill" style="width:${Math.max(10, Math.min(100, s.val))}%"></div></div>
+        <div class="score-row-head"><span>${s.label}</span><strong>${s.val == null ? '—' : `${s.val} / 100`}</strong></div>
+        <div class="score-track"><div class="score-fill" style="width:${s.val == null ? 0 : Math.max(10, Math.min(100, s.val))}%"></div></div>
       </div>`
     )
     .join('');

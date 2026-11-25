@@ -174,8 +174,18 @@ export async function generateStudyReport({
   durationSec,
   speakingStats = null,
   focusStats = null,
+  lessonTargets = [],
+  targetUsage = null,
 }) {
-  const dialogue = formatTranscriptForPrompt(transcript, 120);
+  const dialogue = formatTranscriptForPrompt(transcript, 160);
+  const missionBlock =
+    Array.isArray(lessonTargets) && lessonTargets.length
+      ? `\nLesson Mission target expressions: ${lessonTargets.map((t) => `"${t}"`).join(', ')}${
+          targetUsage
+            ? `\n- Student produced on their own: ${targetUsage.used.length ? targetUsage.used.map((t) => `"${t}"`).join(', ') : 'none yet'}\n- Not yet produced: ${targetUsage.remaining.length ? targetUsage.remaining.map((t) => `"${t}"`).join(', ') : 'none'}`
+            : ''
+        }`
+      : '';
   const mins = Math.max(1, Math.round(durationSec / 60));
   const metricsBlock =
     speakingStats && speakingStats.studentTurns > 0
@@ -201,7 +211,7 @@ Session metadata:
 - Student: ${studentName} (${levelLabel})
 - Tutor: ${tutor.name} (${tutor.accentLabel})
 - Lesson / Textbook: ${topicLabel}
-- Call Duration: approx. ${mins} min${metricsBlock}${focusBlock}
+- Call Duration: approx. ${mins} min${metricsBlock}${focusBlock}${missionBlock}
 
 Conversation transcript:
 ${dialogue}
@@ -213,11 +223,12 @@ Return strictly valid JSON with this exact structure:
   "praiseBadge": "오늘의 칭찬 타이틀 (예: 완전한 문장 챌린지 성공 / 논리적인 미니 토론왕)",
   "summary": "학부모와 아이가 함께 읽기 좋은 따뜻한 한국어 총평 — 잘한 점 2가지와 다음 성장 포인트 1가지 포함 (3~4문장)",
   "scores": {
-    "fluency": 82,
-    "naturalness": 78,
-    "vocabulary": 76,
-    "engagement": 88
+    "fluency": "<integer 0-100 from the rubric>",
+    "naturalness": "<integer 0-100 from the rubric>",
+    "vocabulary": "<integer 0-100 from the rubric>",
+    "engagement": "<integer 0-100 from the rubric>"
   },
+  "missionResult": "오늘의 목표 표현을 아이가 스스로 얼마나 썼는지 한 문장 (한국어, 목표가 없으면 빈 문자열)",
   "speakingWins": [
     "오늘 대화에서 실제로 잘해낸 구체적인 말하기 포인트 1 (한국어)",
     "오늘 대화에서 실제로 잘해낸 구체적인 말하기 포인트 2 (한국어)"
@@ -245,10 +256,16 @@ Return strictly valid JSON with this exact structure:
 }
 
 Rules:
-- Provide 3 to 5 concrete corrections from the student's actual utterances (or upgrade simple sentences into richer native ones if they made few errors).
+- Every "original" in corrections MUST be copied word-for-word from a Student line in the transcript above. Never invent or paraphrase what the student said. Skip lines that look like speech-recognition noise.
+- Provide 3 to 5 concrete corrections (if the student made few errors, upgrade their real simple sentences into richer natural ones).
 - Provide 1 to 2 actionable, concrete items in "recurringHabits" that will be fed directly to the AI tutor in the next lesson.
 - Provide 4 to 6 key vocabulary/phrases.
-- Scores should be encouraging yet realistic integers between 60 and 98.`;
+- HONEST SCORES for the student's level (${levelLabel}). Do not inflate; parents use these to track real progress over time. Base them on the transcript and the objective metrics:
+  * fluency: 90+ = mostly 8+ word connected answers with few long pauses; 75-89 = many full sentences; 60-74 = mix of full sentences and short answers; below 60 = mostly 1-3 word answers.
+  * naturalness: how close the sentences are to what a native peer would say (grammar + word choice).
+  * vocabulary: range and accuracy of words actually used by the student (not the tutor).
+  * engagement: answered readily, asked questions, stayed on task (use the focus summary if present).
+- Keep the Korean summary warm and encouraging, but the scores must stay honest.`;
 
   return callGeminiJson({ apiKey, model, prompt });
 }

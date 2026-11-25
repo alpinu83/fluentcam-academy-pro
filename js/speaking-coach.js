@@ -250,8 +250,46 @@ ${lines.join('\n')}`
  * Silent live telemetry payload attached to classroom tool responses so the live tutor
  * gets objective mid-class feedback without interrupting the audio stream.
  */
-export function buildMidCallCoachFeedback(transcript = []) {
+/**
+ * Checks which lesson target expressions the STUDENT has actually said so far.
+ * A target counts as used when its key content words (3+ letters) all appear in one student turn.
+ */
+function expandContractions(text = '') {
+  return String(text)
+    .toLowerCase()
+    .replace(/[’‘]/g, "'")
+    .replace(/\bcan't\b/g, 'can not')
+    .replace(/\bwon't\b/g, 'will not')
+    .replace(/n't\b/g, ' not')
+    .replace(/'m\b/g, ' am')
+    .replace(/'re\b/g, ' are')
+    .replace(/'ve\b/g, ' have')
+    .replace(/'ll\b/g, ' will')
+    .replace(/'d\b/g, ' would')
+    .replace(/'s\b/g, ' is');
+}
+
+export function trackTargetUsage(transcript = [], targets = []) {
+  const studentTexts = (Array.isArray(transcript) ? transcript : [])
+    .filter((t) => t && t.role === 'user' && typeof t.text === 'string')
+    .map((t) => expandContractions(t.text));
+  const used = [];
+  const remaining = [];
+  for (const target of Array.isArray(targets) ? targets : []) {
+    const keyWords = tokenizeEnglishWords(expandContractions(target).replace(/\.\.\.|_+|\[[^\]]*\]|\([^)]*\)/g, ' '))
+      .map((w) => w.toLowerCase())
+      .filter((w) => w.length >= 3 && !['the', 'and', 'you', 'your', 'are', 'for', 'with'].includes(w));
+    const ok =
+      keyWords.length > 0 &&
+      studentTexts.some((txt) => keyWords.every((w) => new RegExp(`\\b${w.replace(/[^a-z']/g, '')}`, 'i').test(txt)));
+    (ok ? used : remaining).push(target);
+  }
+  return { used, remaining };
+}
+
+export function buildMidCallCoachFeedback(transcript = [], lessonTargets = []) {
   const stats = analyzeConversationSpeaking(transcript);
+  const targetUsage = lessonTargets.length ? trackTargetUsage(transcript, lessonTargets) : null;
   if (stats.studentTurns < 2) {
     return {
       studentTurns: stats.studentTurns,
@@ -280,8 +318,15 @@ export function buildMidCallCoachFeedback(transcript = []) {
     tips.push('Encourage using a connector like "because", "so", or "when" to extend their next answer.');
   }
 
+  if (targetUsage && targetUsage.remaining.length > 0 && stats.studentTurns >= 4) {
+    tips.push(
+      `Lesson Mission: the student has NOT yet said ${targetUsage.remaining.map((t) => `"${t}"`).join(', ')} themselves—create a natural chance for them to use it soon.`
+    );
+  }
+
   return {
     studentTurns: stats.studentTurns,
+    ...(targetUsage ? { missionTargetsUsed: targetUsage.used, missionTargetsRemaining: targetUsage.remaining } : {}),
     avgWordsPerTurn: stats.avgWordsPerTurn,
     fullSentenceRatePct: stats.fullSentenceRate,
     studentQuestionsAsked: stats.questionTurns,
