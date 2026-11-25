@@ -45,7 +45,7 @@ import {
   generateFamilyCode,
   getDeviceId,
   loadFirebaseSyncConfig,
-} from './firebase-sync.js?v=20261124g';
+} from './firebase-sync.js?v=20261125a';
 import {
   ClassroomFocusGuard,
   FOCUS_SENSITIVITY_CONFIG,
@@ -3183,15 +3183,58 @@ function bindEvents() {
   el.pinUnlockForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const entered = el.pinUnlockInput.value.trim();
-    if (entered === getParentPin()) {
+    const localPin = getParentPin();
+    const localPinTs = Number(localStorage.getItem(STORAGE_KEYS.PIN_UPDATED_AT)) || 0;
+    const openParentMode = (msg) => {
       state.parentUnlocked = true;
       el.pinModal.classList.add('hidden');
+      el.pinErrorMsg.classList.add('hidden');
       switchView('parent');
-      showToast('부모 관리 모드가 열렸습니다.');
+      showToast(msg, 3800);
+    };
+
+    // 1) Family cloud (Firebase) PIN first: it is the family-wide source of truth,
+    //    so a PIN changed on the iPad also unlocks this device and restores the API key.
+    const fbCheck = loadFirebaseSyncConfig().enabled ? await firebaseSync?.checkParentPin(entered) : null;
+    if (fbCheck?.matched) {
+      const pinChanged = entered !== localPin;
+      localStorage.setItem(STORAGE_KEYS.PARENT_PIN, entered);
+      if (fbCheck.pinUpdatedAt) {
+        localStorage.setItem(STORAGE_KEYS.PIN_UPDATED_AT, String(fbCheck.pinUpdatedAt));
+      }
+      const localKey = localStorage.getItem(STORAGE_KEYS.API_KEY) || '';
+      const localKeyTs = Number(localStorage.getItem(STORAGE_KEYS.API_KEY_UPDATED_AT)) || 0;
+      let restoredKey = false;
+      if (fbCheck.apiKey && fbCheck.apiKey !== localKey && (!localKey || fbCheck.apiKeyUpdatedAt >= localKeyTs)) {
+        localStorage.setItem(STORAGE_KEYS.API_KEY, fbCheck.apiKey);
+        el.apiKeyInput.value = fbCheck.apiKey;
+        if (fbCheck.apiKeyUpdatedAt) {
+          localStorage.setItem(STORAGE_KEYS.API_KEY_UPDATED_AT, String(fbCheck.apiKeyUpdatedAt));
+        }
+        restoredKey = true;
+      }
+      openParentMode(
+        restoredKey
+          ? '가족 클라우드 PIN 확인 완료! 암호화된 Gemini API 키를 이 기기에 복원했어요.'
+          : pinChanged
+            ? '다른 기기에서 바꾼 부모 PIN으로 열었어요. 이 기기 PIN도 자동으로 맞췄습니다.'
+            : '부모 관리 모드가 열렸습니다.'
+      );
+      firebaseSync.syncNow({ pushIfChanged: true, silent: true });
       return;
     }
-    const fbMatch = await firebaseSync?.tryUnlockWithPin(entered);
-    const cloudMatch = fbMatch?.matched ? fbMatch : await cloudSync?.tryUnlockWithPin(entered);
+
+    // 2) Local PIN, unless the family cloud holds a newer PIN set on another device
+    const cloudPinIsNewer = Boolean(
+      fbCheck?.reachable && fbCheck.hasCloudPin && (fbCheck.pinUpdatedAt || 0) >= localPinTs
+    );
+    if (entered === localPin && !cloudPinIsNewer) {
+      openParentMode('부모 관리 모드가 열렸습니다.');
+      return;
+    }
+
+    // 3) Legacy GitHub private-repo sync
+    const cloudMatch = await cloudSync?.tryUnlockWithPin(entered);
     if (cloudMatch?.matched) {
       localStorage.setItem(STORAGE_KEYS.PARENT_PIN, entered);
       if (cloudMatch.pinUpdatedAt) {
@@ -3212,7 +3255,10 @@ function bindEvents() {
       showToast('클라우드 부모 PIN 확인 완료! 암호화된 API 키까지 자동 복원했어요.', 3800);
       return;
     }
-    el.pinErrorMsg.textContent = '비밀번호가 일치하지 않습니다. 다시 입력해 주세요.';
+    el.pinErrorMsg.textContent =
+      entered === localPin && cloudPinIsNewer
+        ? '다른 기기에서 부모 PIN이 변경되었어요. 새로 바꾼 4자리 PIN을 입력해 주세요.'
+        : '비밀번호가 일치하지 않습니다. 다시 입력해 주세요.';
     el.pinErrorMsg.classList.remove('hidden');
     el.pinUnlockInput.select();
   });

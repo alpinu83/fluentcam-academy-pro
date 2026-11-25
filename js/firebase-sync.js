@@ -200,6 +200,17 @@ export function createFirebaseCloudSync({
     });
   }
 
+  // Signature of shareable learning data only (no API key / PIN secrets)
+  function computeDataSignature(snapshot) {
+    return JSON.stringify({
+      settings: snapshot.settings,
+      historyIds: (snapshot.history || []).map((h) => h.id),
+      aiBookIds: (snapshot.aiBooks || []).map((b) => b.id),
+      deletedAiBookIds: snapshot.deletedAiBookIds || [],
+      fsrsSig: (snapshot.fsrsDeck || []).map((c) => `${c.id}:${c.reps || 0}:${c.lastReview || 0}`),
+    });
+  }
+
   async function fetchRemoteData(familyCode) {
     const res = await fetch(`${getNodeBaseUrl(familyCode)}.json`, {
       method: 'GET',
@@ -288,6 +299,58 @@ export function createFirebaseCloudSync({
       apiKeyUpdatedAt: cloudData.apiKeyUpdatedAt || cloudData.updatedAt || 0,
     };
     return { apiKey: '', resolvedPin: null, needsPin: true };
+  }
+
+  /**
+   * Checks a Parent PIN directly against the family cloud (fresh fetch, 5s timeout).
+   * The cloud PIN verifier is the family-wide source of truth, so a device that still
+   * has the old/default PIN can be unlocked with the PIN changed on another device,
+   * and the encrypted Gemini API key is restored in the same step.
+   */
+  async function checkParentPin(enteredPin) {
+    const cfg = loadFirebaseSyncConfig();
+    if (!cfg.enabled || !cfg.familyCode) return { reachable: false, hasCloudPin: false, matched: false };
+    let cloudData = null;
+    try {
+      const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = ctrl ? setTimeout(() => ctrl.abort(), 5000) : null;
+      const res = await fetch(`${getNodeBaseUrl(cfg.familyCode)}.json`, {
+        method: 'GET',
+        cache: 'no-store',
+        signal: ctrl?.signal,
+      });
+      if (timer) clearTimeout(timer);
+      if (!res.ok) return { reachable: false, hasCloudPin: false, matched: false };
+      cloudData = await res.json();
+    } catch {
+      return { reachable: false, hasCloudPin: false, matched: false };
+    }
+    if (!cloudData?.pinVerifier) return { reachable: true, hasCloudPin: false, matched: false };
+
+    const scope = getCryptoScope(cfg.familyCode);
+    const pinUpdatedAt = Number(cloudData.pinUpdatedAt) || 0;
+    const ok = await verifyPinAgainstCloud(enteredPin, scope, cloudData.pinVerifier);
+    if (!ok) return { reachable: true, hasCloudPin: true, matched: false, pinUpdatedAt };
+
+    let apiKey = '';
+    if (cloudData.encryptedApiKey) {
+      try {
+        apiKey = (await decryptApiKey(cloudData.encryptedApiKey, enteredPin, scope)) || '';
+      } catch {
+        apiKey = '';
+      }
+    }
+    cachedCloudEncryptedApiKey = null;
+    cachedCloudPinVerifier = null;
+    cachedCloudMeta = null;
+    return {
+      reachable: true,
+      hasCloudPin: true,
+      matched: true,
+      apiKey,
+      pinUpdatedAt,
+      apiKeyUpdatedAt: Number(cloudData.apiKeyUpdatedAt || cloudData.updatedAt) || 0,
+    };
   }
 
   async function tryUnlockWithPin(enteredPin) {
@@ -425,8 +488,8 @@ export function createFirebaseCloudSync({
         applyMergedSnapshot(merged);
       }
 
-      const cloudSig = cloudData
-        ? computeContentSignature({
+      const cloudView = cloudData
+        ? {
             settings: cloudData.settings,
             apiKey: keyRes.apiKey || '',
             pinUpdatedAt: cloudData.pinUpdatedAt || 0,
@@ -434,15 +497,39 @@ export function createFirebaseCloudSync({
             aiBooks: Array.isArray(cloudData.aiBooks) ? cloudData.aiBooks : [],
             deletedAiBookIds: Array.isArray(cloudData.deletedAiBookIds) ? cloudData.deletedAiBookIds : [],
             fsrsDeck: Array.isArray(cloudData.fsrsDeck) ? cloudData.fsrsDeck : [],
-          })
-        : '';
+          }
+        : null;
+      const cloudSig = cloudView ? computeContentSignature(cloudView) : '';
+      const dataChanged = cloudView ? computeDataSignature(merged) !== computeDataSignature(cloudView) : true;
 
+      // FIX: a device that does not (yet) know the family PIN must still upload its
+      // settings, lesson history, AI books and FSRS cards. Only the secrets are left untouched.
       const shouldPush =
         forcePush ||
-        (pushIfChanged && (!cloudData || (mergedSig !== cloudSig && !pinNeeded)));
+        (pushIfChanged && (!cloudData || (pinNeeded ? dataChanged : mergedSig !== cloudSig)));
 
       if (shouldPush) {
-        const payload = await buildCloudPayload(merged, cfg.familyCode);
+        let payload = await buildCloudPayload(merged, cfg.familyCode);
+        const cloudKeyTs = Number(cloudData?.apiKeyUpdatedAt || cloudData?.updatedAt) || 0;
+        if (pinNeeded && cloudData) {
+          // Keep the family's encrypted API key + PIN verifier exactly as they are in the cloud
+          payload = {
+            ...payload,
+            encryptedApiKey: cloudData.encryptedApiKey || null,
+            pinVerifier: cloudData.pinVerifier || null,
+            pinUpdatedAt: cloudData.pinUpdatedAt || 0,
+            apiKeyUpdatedAt: cloudKeyTs,
+          };
+        } else if (
+          cloudData?.encryptedApiKey &&
+          !payload.encryptedApiKey &&
+          !((local.apiKeyUpdatedAt || 0) > cloudKeyTs) &&
+          !((local.pinUpdatedAt || 0) > (cloudData.pinUpdatedAt || 0))
+        ) {
+          // Safety net: never silently wipe the family's encrypted API key
+          payload.encryptedApiKey = cloudData.encryptedApiKey;
+          payload.apiKeyUpdatedAt = cloudKeyTs;
+        }
         lastPushedUpdatedAt = payload.updatedAt;
         await putRemoteData(cfg.familyCode, payload);
       } else if (cloudData?.updatedAt) {
@@ -677,6 +764,7 @@ export function createFirebaseCloudSync({
     connectWithFamilyCode,
     disconnect,
     tryUnlockWithPin,
+    checkParentPin,
     pullOnVisibilityIfStale,
     startRealtimeWatch,
     stopRealtimeWatch,
@@ -686,6 +774,7 @@ export function createFirebaseCloudSync({
     emitCurrentStatus: () => {
       const cfg = loadFirebaseSyncConfig();
       if (!cfg.enabled) emitStatus('disconnected', '가족 코드 미연결');
+      else if (cachedCloudPinVerifier) emitStatus('pin_required', '설정 동기화됨 · 부모 PIN 입력 시 암호화 API 키 복원');
       else emitStatus('synced', '가족 실시간 클라우드 연결됨');
     },
   };
