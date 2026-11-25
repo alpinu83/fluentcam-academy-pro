@@ -53,6 +53,46 @@ export function generateFamilyCode(len = 28) {
   return out;
 }
 
+// iPad/iPhone Home Screen web apps get their OWN storage (Safari localStorage is not copied),
+// but iOS copies Safari's cookies into the new web app when it is added (iOS 17.2+).
+// So the family code is mirrored into a path-scoped cookie and picked up on first launch.
+const FC_FAMILY_COOKIE = 'fc_family';
+
+function getCookiePath() {
+  try {
+    return window.location.pathname.replace(/[^/]*$/, '') || '/';
+  } catch {
+    return '/';
+  }
+}
+
+export function readFamilyCodeCookie() {
+  try {
+    const m = document.cookie.match(new RegExp(`(?:^|;\\s*)${FC_FAMILY_COOKIE}=([^;]+)`));
+    return m ? cleanFamilyCode(decodeURIComponent(m[1])) : '';
+  } catch {
+    return '';
+  }
+}
+
+export function rememberFamilyCodeCookie(code) {
+  try {
+    const cleaned = cleanFamilyCode(code);
+    if (cleaned.length < 24 || readFamilyCodeCookie() === cleaned) return;
+    document.cookie = `${FC_FAMILY_COOKIE}=${encodeURIComponent(cleaned)}; path=${getCookiePath()}; max-age=31536000; secure; samesite=lax`;
+  } catch {
+    // ignore (cookies blocked)
+  }
+}
+
+function forgetFamilyCodeCookie() {
+  try {
+    document.cookie = `${FC_FAMILY_COOKIE}=; path=${getCookiePath()}; max-age=0; secure; samesite=lax`;
+  } catch {
+    // ignore
+  }
+}
+
 export function detectFamilyCodeFromUrlOrStorage() {
   // 1. Check URL hash `#family=...` (same format as KidQuest!)
   try {
@@ -67,6 +107,7 @@ export function detectFamilyCodeFromUrlOrStorage() {
           localStorage.setItem(KQ_FAMILY_KEY, fromHash);
         }
         window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        rememberFamilyCodeCookie(fromHash);
         return { code: fromHash, source: 'link' };
       }
     }
@@ -77,6 +118,7 @@ export function detectFamilyCodeFromUrlOrStorage() {
   // 2. Check FluentCam saved family code
   const savedFc = cleanFamilyCode(localStorage.getItem(FC_FAMILY_KEY) || '');
   if (savedFc.length >= 24) {
+    rememberFamilyCodeCookie(savedFc);
     return { code: savedFc, source: 'saved' };
   }
 
@@ -84,7 +126,22 @@ export function detectFamilyCodeFromUrlOrStorage() {
   const savedKq = cleanFamilyCode(localStorage.getItem(KQ_FAMILY_KEY) || '');
   if (savedKq.length >= 24) {
     localStorage.setItem(FC_FAMILY_KEY, savedKq);
+    rememberFamilyCodeCookie(savedKq);
     return { code: savedKq, source: 'kidquest' };
+  }
+
+  // 4. Fresh Home Screen web app on iPad: recover the family code from the copied Safari cookie
+  //    (unless the parent explicitly disconnected sync on this device)
+  let disconnectedHere = false;
+  try {
+    disconnectedHere = Boolean(JSON.parse(localStorage.getItem(FB_META_KEY) || '{}').disabled);
+  } catch {
+    disconnectedHere = false;
+  }
+  const fromCookie = disconnectedHere ? '' : readFamilyCodeCookie();
+  if (fromCookie.length >= 24) {
+    localStorage.setItem(FC_FAMILY_KEY, fromCookie);
+    return { code: fromCookie, source: 'homescreen' };
   }
 
   return { code: '', source: 'none' };
@@ -131,6 +188,7 @@ export function saveFamilyCode(code) {
 
 export function clearFirebaseSync() {
   localStorage.removeItem(FC_FAMILY_KEY);
+  forgetFamilyCodeCookie();
   saveFirebaseSyncMeta({ disabled: true, lastSyncedAt: 0 });
 }
 

@@ -48,7 +48,7 @@ import {
   generateFamilyCode,
   getDeviceId,
   loadFirebaseSyncConfig,
-} from './firebase-sync.js?v=20261125a';
+} from './firebase-sync.js?v=20261125c';
 import {
   ClassroomFocusGuard,
   FOCUS_SENSITIVITY_CONFIG,
@@ -3910,8 +3910,16 @@ function bindEvents() {
     el.installPwaBtn?.classList.add('hidden');
     showToast('FluentCam 웹앱이 설치되었어요! 홈 화면에서 바로 실행할 수 있습니다.', 3600);
   });
+  // iPad / iPhone: Safari never fires beforeinstallprompt, so show our own "Add to Home Screen" guide
+  if (IS_IOS_DEVICE && !IS_STANDALONE_APP && el.installPwaBtn) {
+    el.installPwaBtn.classList.remove('hidden');
+    el.installPwaBtn.title = '아이패드 홈 화면에 앱으로 추가하는 방법';
+  }
   el.installPwaBtn?.addEventListener('click', async () => {
-    if (!deferredInstallPrompt) return;
+    if (!deferredInstallPrompt) {
+      if (IS_IOS_DEVICE) openIosInstallGuide();
+      return;
+    }
     deferredInstallPrompt.prompt();
     const choice = await deferredInstallPrompt.userChoice.catch(() => null);
     if (choice?.outcome === 'accepted') {
@@ -4591,6 +4599,60 @@ async function handleImportBackupFile(e) {
   }
 }
 
+// ==================== iPad / iPhone HOME SCREEN WEB APP ====================
+const IS_IOS_DEVICE =
+  /iPad|iPhone|iPod/i.test(navigator.userAgent || '') ||
+  (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
+const IS_STANDALONE_APP =
+  window.matchMedia?.('(display-mode: standalone)').matches ||
+  window.matchMedia?.('(display-mode: fullscreen)').matches ||
+  window.navigator.standalone === true;
+// In-app browsers and non-Safari browsers on iPad (Chrome, Kakao, Naver...) make a plain bookmark
+const IS_IOS_NON_SAFARI = /CriOS|FxiOS|EdgiOS|OPiOS|GSA\/|KAKAOTALK|NAVER|Instagram|FBAN|FBAV|Line\/|DaumApps|Whale/i.test(
+  navigator.userAgent || ''
+);
+
+function openIosInstallGuide() {
+  document.getElementById('iosInstallGuideModal')?.remove();
+  const appUrl = `${window.location.origin}${window.location.pathname}`;
+  const wrap = document.createElement('div');
+  wrap.id = 'iosInstallGuideModal';
+  wrap.className = 'modal-backdrop';
+  wrap.innerHTML = `
+    <div class="modal-panel ios-guide-panel" role="dialog" aria-modal="true" aria-labelledby="iosGuideTitle">
+      <div class="ios-guide-body">
+        <h3 id="iosGuideTitle">📲 아이패드에 앱처럼 설치하기</h3>
+        ${
+          IS_IOS_NON_SAFARI
+            ? `<p class="ios-guide-warn">지금은 <b>Safari가 아닌 브라우저</b>에서 열려 있어요. 여기서 추가하면 주소줄이 보이는 북마크로 만들어져요. 아래 주소를 복사해 <b>Safari</b>에서 열어 주세요.</p>
+               <button type="button" class="btn btn-primary btn-sm" data-ios-copy>주소 복사하기</button>`
+            : ''
+        }
+        <ol class="ios-guide-steps">
+          <li>이미 만든 FluentCam 아이콘이 있으면 길게 눌러 <b>삭제</b>해 주세요. (주소줄이 보이는 아이콘은 북마크라서 다시 만들어야 해요.)</li>
+          <li><b>Safari</b>에서 이 페이지를 연 뒤, 주소줄 옆 <b>공유 버튼</b>(네모에 위 화살표)을 눌러요.</li>
+          <li><b>홈 화면에 추가</b>를 눌러요. (안 보이면 목록을 아래로 내리거나 ‘더 보기’)</li>
+          <li>추가 화면의 <b>‘웹 앱으로 열기’ 스위치가 켜져 있는지</b> 꼭 확인하고 <b>추가</b>를 눌러요. 이 스위치가 꺼져 있으면 주소줄이 그대로 나와요.</li>
+          <li>홈 화면 아이콘으로 처음 열면 가족 동기화는 자동으로 연결돼요. <b>🔒 부모 관리</b>에서 부모 PIN을 한 번만 입력하면 Gemini API 키도 복원돼요.</li>
+        </ol>
+        <div class="ios-guide-actions"><button type="button" class="btn btn-secondary btn-sm" data-ios-close>확인</button></div>
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.addEventListener('click', (e) => {
+    if (e.target === wrap || e.target.closest('[data-ios-close]')) close();
+  });
+  wrap.querySelector('[data-ios-copy]')?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(appUrl);
+      showToast('주소를 복사했어요. Safari 주소창에 붙여넣어 주세요!', 3600);
+    } catch {
+      window.prompt('이 주소를 복사해 Safari에서 열어 주세요:', appUrl);
+    }
+  });
+}
+
 // ==================== INIT ====================
 async function init() {
   const syncedFromLink = tryApplySyncFromUrlHash();
@@ -4616,7 +4678,14 @@ async function init() {
   if (fbCfg.enabled) {
     firebaseSync.fetchLiveFocusStatus();
     firebaseSync.syncNow({ pushIfChanged: true, silent: true }).then((res) => {
-      if (res?.ok && fbCfg.source === 'link') {
+      if (res?.ok && fbCfg.source === 'homescreen') {
+        showToast(
+          res.pinNeeded
+            ? '홈 화면 앱에 가족 동기화가 연결됐어요! 🔒 부모 관리에서 PIN을 한 번 입력하면 API 키까지 복원돼요.'
+            : '홈 화면 앱에 가족 동기화가 연결됐어요!',
+          5200
+        );
+      } else if (res?.ok && fbCfg.source === 'link') {
         showToast('⚡ 가족 기기 연결 완료! 이제 KidQuest처럼 자동 동기화됩니다.', 4200);
       } else if (res?.ok && res.changedLocally && !syncedFromLink) {
         showToast('⚡ 가족 클라우드에서 최신 설정·학습 기록을 불러왔어요!', 3200);
