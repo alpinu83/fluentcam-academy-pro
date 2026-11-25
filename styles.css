@@ -994,3 +994,19 @@ html, body {
   .kid-profile-grid, .tutor-grid, .textbook-grid, .textbook-grid.three-col, .level-grid, .correction-grid, .vocab-grid, .book-debate-grid, .kpi-strip, .speaking-kpi-grid, .ai-book-gen-form, .live-focus-grid { grid-template-columns: 1fr; }
   .fsrs-rating-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ==================== iPad / iPhone HOME SCREEN WEB APP ==================== */
+/* black-translucent status bar: keep the header and call screen clear of the iPad clock/battery bar */
+.top-header { padding-top: calc(12px + env(safe-area-inset-top, 0px)); }
+.call-view { height: 100vh; height: 100dvh; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: border-box; }
+.toast { bottom: calc(26px + env(safe-area-inset-bottom, 0px)); }
+@media (max-width: 1080px) {
+  .call-sidebar { padding-top: env(safe-area-inset-top, 0px); }
+}
+.ios-guide-panel { max-width: 520px; }
+.ios-guide-body { padding: 22px 22px 18px; overflow-y: auto; }
+.ios-guide-body h3 { margin: 0 0 12px; font-size: 1.08rem; }
+.ios-guide-warn { margin: 0 0 10px; padding: 10px 12px; border-radius: 10px; background: rgba(217, 119, 69, 0.14); color: var(--text-primary); font-size: 0.86rem; line-height: 1.5; }
+.ios-guide-steps { margin: 14px 0 0; padding-left: 20px; display: grid; gap: 10px; font-size: 0.88rem; line-height: 1.55; color: var(--text-secondary); }
+.ios-guide-steps b { color: var(--text-primary); }
+.ios-guide-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
