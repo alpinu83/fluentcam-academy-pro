@@ -2,7 +2,7 @@
 // - HTML/JS/CSS: Network-first (instant updates, offline fallback)
 // - Static images/icons/avatars/vendor: Cache-first (fast classroom loading)
 // - Never intercepts Firebase RTDB, Gemini API, GitHub API, SSE, or WebSockets
-const VERSION = 'fc-20261124f';
+const VERSION = 'fc-20261124g';
 const CORE = `${VERSION}-core`;
 const ASSETS = `${VERSION}-assets`;
 

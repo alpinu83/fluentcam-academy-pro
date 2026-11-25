@@ -24,6 +24,16 @@ export const FIREBASE_DB_URL = 'https://kidquest-family-default-rtdb.asia-southe
 const FC_FAMILY_KEY = 'fluentcam_family_code_v1';
 const KQ_FAMILY_KEY = 'kq2_family';
 const FB_META_KEY = 'fluentcam_firebase_sync_meta_v1';
+const FC_DEVICE_ID_KEY = 'fluentcam_device_id_v1';
+
+export function getDeviceId() {
+  let id = localStorage.getItem(FC_DEVICE_ID_KEY);
+  if (!id || id.length < 8) {
+    id = `dev_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
+    localStorage.setItem(FC_DEVICE_ID_KEY, id);
+  }
+  return id;
+}
 
 export function cleanFamilyCode(raw) {
   return String(raw || '')
@@ -134,6 +144,11 @@ function getNodeBaseUrl(familyCode) {
   return `${FIREBASE_DB_URL}/families/${encodeURIComponent(`${familyCode}_fluentcam`)}`;
 }
 
+function getLiveStatusUrl(familyCode) {
+  // Isolated sibling node for real-time classroom focus presence (never overwritten by main sync PUT)
+  return `${FIREBASE_DB_URL}/families/${encodeURIComponent(`${familyCode}_fluentcam_live`)}.json`;
+}
+
 function getCryptoScope(familyCode) {
   return `firebase:${familyCode}`;
 }
@@ -142,6 +157,7 @@ export function createFirebaseCloudSync({
   getLocalSnapshot,
   applyMergedSnapshot,
   onStatusChange,
+  onLiveFocusChange,
   requestCloudPinPrompt,
 }) {
   let debounceTimer = null;
@@ -155,6 +171,8 @@ export function createFirebaseCloudSync({
   let cachedCloudMeta = null;
   let sseSource = null;
   let sseReconnectTimer = null;
+  let liveSseSource = null;
+  let liveSseReconnectTimer = null;
 
   function emitStatus(state, message = '') {
     const cfg = loadFirebaseSyncConfig();
@@ -456,9 +474,115 @@ export function createFirebaseCloudSync({
     }
   }
 
+  async function publishLiveFocusStatus(payload, { keepalive = false } = {}) {
+    const cfg = loadFirebaseSyncConfig();
+    if (!cfg.enabled || !cfg.familyCode) return false;
+    try {
+      const body = JSON.stringify({
+        ...payload,
+        deviceId: getDeviceId(),
+        updatedAt: Date.now(),
+      });
+      await fetch(getLiveStatusUrl(cfg.familyCode), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: Boolean(keepalive),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function clearLiveFocusStatus({ keepalive = false } = {}) {
+    return publishLiveFocusStatus(
+      {
+        active: false,
+        focusState: 'ended',
+        statusText: '수업 종료됨',
+      },
+      { keepalive }
+    );
+  }
+
+  async function fetchLiveFocusStatus() {
+    const cfg = loadFirebaseSyncConfig();
+    if (!cfg.enabled || !cfg.familyCode) return null;
+    try {
+      const res = await fetch(getLiveStatusUrl(cfg.familyCode), { method: 'GET', cache: 'no-store' });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data && typeof data === 'object') {
+        onLiveFocusChange?.(data);
+        return data;
+      }
+      onLiveFocusChange?.(null);
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function startLiveFocusWatch() {
+    const cfg = loadFirebaseSyncConfig();
+    if (!cfg.enabled || !cfg.familyCode || typeof onLiveFocusChange !== 'function') return;
+    if (typeof window.EventSource !== 'function') {
+      fetchLiveFocusStatus();
+      return;
+    }
+    if (liveSseSource) return;
+
+    try {
+      const es = new EventSource(getLiveStatusUrl(cfg.familyCode));
+      liveSseSource = es;
+
+      const handleLiveUpdate = (ev) => {
+        try {
+          const parsed = JSON.parse(ev.data);
+          const data = parsed && typeof parsed === 'object' && 'data' in parsed ? parsed.data : parsed;
+          if (!data || typeof data !== 'object') {
+            onLiveFocusChange?.(null);
+            return;
+          }
+          onLiveFocusChange?.(data);
+        } catch {
+          // ignore keep-alive
+        }
+      };
+
+      es.addEventListener('put', handleLiveUpdate);
+      es.addEventListener('patch', () => {
+        fetchLiveFocusStatus();
+      });
+      es.onerror = () => {
+        stopLiveFocusWatch();
+        clearTimeout(liveSseReconnectTimer);
+        liveSseReconnectTimer = setTimeout(() => {
+          if (loadFirebaseSyncConfig().enabled) startLiveFocusWatch();
+        }, 10000);
+      };
+    } catch {
+      fetchLiveFocusStatus();
+    }
+  }
+
+  function stopLiveFocusWatch() {
+    clearTimeout(liveSseReconnectTimer);
+    if (liveSseSource) {
+      try {
+        liveSseSource.close();
+      } catch {
+        // ignore
+      }
+      liveSseSource = null;
+    }
+  }
+
   function startRealtimeWatch() {
     const cfg = loadFirebaseSyncConfig();
     if (!cfg.enabled || !cfg.familyCode || typeof window.EventSource !== 'function') return;
+    startLiveFocusWatch();
     if (sseSource) return;
 
     try {
@@ -503,6 +627,7 @@ export function createFirebaseCloudSync({
       }
       sseSource = null;
     }
+    stopLiveFocusWatch();
   }
 
   function schedulePush(delayMs = 1200) {
@@ -533,6 +658,7 @@ export function createFirebaseCloudSync({
     cachedCloudPinVerifier = null;
     cachedCloudMeta = null;
     lastSyncedSignature = '';
+    onLiveFocusChange?.(null);
     emitStatus('disconnected', '가족 클라우드 연결 해제됨');
   }
 
@@ -542,6 +668,7 @@ export function createFirebaseCloudSync({
     if (Date.now() - lastPullAt >= minIntervalMs) {
       syncNow({ pushIfChanged: false, silent: true });
     }
+    fetchLiveFocusStatus();
   }
 
   return {
@@ -553,6 +680,9 @@ export function createFirebaseCloudSync({
     pullOnVisibilityIfStale,
     startRealtimeWatch,
     stopRealtimeWatch,
+    publishLiveFocusStatus,
+    clearLiveFocusStatus,
+    fetchLiveFocusStatus,
     emitCurrentStatus: () => {
       const cfg = loadFirebaseSyncConfig();
       if (!cfg.enabled) emitStatus('disconnected', '가족 코드 미연결');

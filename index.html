@@ -24,7 +24,7 @@
     }
   }
   </script>
-  <link rel="stylesheet" href="styles.css?v=20261124f" />
+  <link rel="stylesheet" href="styles.css?v=20261124g" />
 </head>
 <body>
   <div id="app" class="app-shell">
@@ -53,6 +53,10 @@
       </div>
 
       <div class="header-actions">
+        <button id="liveMonitorPill" class="live-monitor-pill hidden" type="button" title="다른 가족 기기에서 진행 중인 화상영어 집중 상태 (클릭 시 부모 대시보드 이동)">
+          <span class="live-monitor-dot" aria-hidden="true"></span>
+          <span id="liveMonitorPillLabel">수업 집중 중</span>
+        </button>
         <button id="installPwaBtn" class="btn btn-primary btn-sm hidden" type="button" title="크롬에서 웹앱으로 설치하기">
           <span>📲 앱 설치</span>
         </button>
@@ -358,6 +362,16 @@
           </div>
         </div>
 
+        <section id="parentLiveFocusCard" class="surface-card live-focus-card" style="margin-bottom: 18px;">
+          <div class="card-header-row">
+            <h2 class="section-label">📡 실시간 수업 집중 모니터링 (부모 기기 연동 · 무료)</h2>
+            <span id="parentLiveFocusBadge" class="gh-status-badge disconnected">대기 중</span>
+          </div>
+          <div id="parentLiveFocusBody" class="live-focus-body">
+            <p class="status-text" style="margin:0;">현재 진행 중인 화상영어 수업이 없습니다. 아이 기기에서 수업을 시작하면 집중 점수·화면 이탈·시선 이탈 상태가 이곳에 실시간 표시됩니다.</p>
+          </div>
+        </section>
+
         <div class="kpi-strip four" style="margin-bottom: 18px;">
           <div class="kpi-tile">
             <span>누적 수업 횟수</span>
@@ -454,6 +468,35 @@
                 </button>
               </div>
               <span class="status-text">아이가 문장 중간에 잠깐 쉬더라도 설정된 시간 동안 선생님이 끊지 않고 기다립니다.</span>
+            </div>
+
+            <div class="config-block" style="padding-top: 10px; border-top: 1px solid var(--border-hairline);">
+              <div class="card-header-row" style="margin-bottom: 4px;">
+                <span class="config-title" style="margin:0;">🛡️ 수업 집중 가드 (딴짓·이탈 감지 &amp; AI 선생님 제지 · 0원)</span>
+                <label class="inline-switch" style="margin:0;">
+                  <input id="focusGuardEnabledCheckbox" type="checkbox" checked />
+                  <span>사용</span>
+                </label>
+              </div>
+              <div id="focusSensitivityCards" class="correction-grid" role="radiogroup">
+                <button type="button" class="choice-card" data-focus-sens="gentle">
+                  <strong>부드럽게</strong>
+                  <span>자리이탈 11초 · 무응답 26초</span>
+                </button>
+                <button type="button" class="choice-card active" data-focus-sens="normal">
+                  <strong>보통 (권장)</strong>
+                  <span>자리이탈 7.5초 · 무응답 18초</span>
+                </button>
+                <button type="button" class="choice-card" data-focus-sens="strict">
+                  <strong>엄격하게</strong>
+                  <span>자리이탈 5초 · 무응답 13초</span>
+                </button>
+              </div>
+              <label class="inline-switch" style="margin-top: 6px;">
+                <input id="focusCameraAiCheckbox" type="checkbox" checked />
+                <span>카메라 온디바이스 얼굴·시선 이탈 감지 (무료 로컬 AI · API 토큰 0)</span>
+              </label>
+              <span class="status-text">다른 앱/탭 이탈, 자리 비움, 시선 이탈, 긴 무응답 시 선생님이 이름을 부르며 제지하고 부모 리포트·실시간 모니터에 기록합니다. (아이패드는 [설정 → 손쉬운 사용 → 사용법 유도]와 함께 쓰면 앱 전환까지 완벽 차단)</span>
             </div>
 
             <div class="config-block">
@@ -786,11 +829,18 @@
               <div class="call-meta-badges">
                 <button id="callPaceBadge" class="meta-chip pace-chip" type="button" title="클릭하면 선생님께 천천히 말해달라고 바로 요청해요">보통 속도</button>
                 <span id="callNoiseGateBadge" class="meta-chip gate-chip">잡음 차단 대기</span>
+                <span id="callFocusBadge" class="meta-chip focus-chip hidden" title="수업 집중 가드 상태 (부모 관리에서 설정)">🛡️ 집중 ON</span>
                 <span id="callStarBadge" class="meta-chip star-chip" title="이번 수업에서 받은 골드 스타">★ <strong id="callStarCount">0</strong></span>
                 <span id="callStudentChip" class="meta-chip">초3 학생</span>
                 <span id="visionSharingBadge" class="meta-chip hidden"><span class="mini-dot"></span>웹캠</span>
                 <span id="callTimer" class="meta-chip mono">00:00</span>
               </div>
+            </div>
+
+            <!-- Classroom Focus Guard Friendly Alert Banner -->
+            <div id="focusAlertBanner" class="focus-alert-banner hidden" role="status" aria-live="polite">
+              <strong id="focusAlertTitle">👀 선생님과 눈을 맞춰 주세요!</strong>
+              <p id="focusAlertDetail">수업에 집중해 볼까요?</p>
             </div>
 
             <!-- AI Tutor Live Chalkboard Overlay -->
@@ -1003,6 +1053,19 @@
           </div>
         </section>
 
+        <section id="reportFocusCard" class="surface-card report-section hidden">
+          <div class="card-header-row">
+            <h2 class="section-label">🛡️ 수업 집중도 분석 (온디바이스 집중 가드 · 무료)</h2>
+            <span id="reportFocusScoreBadge" class="gh-status-badge synced">100점 · 최상 집중</span>
+          </div>
+          <div id="reportFocusKpis" class="speaking-kpi-grid"></div>
+          <div id="reportFocusTimelineWrap" class="focus-timeline-wrap hidden">
+            <strong>📋 집중 알림 타임라인</strong>
+            <ul id="reportFocusTimelineList"></ul>
+          </div>
+          <p id="reportFocusPraise" class="focus-praise-line hidden"></p>
+        </section>
+
         <section class="surface-card report-section">
           <div class="card-header-row">
             <h2 class="section-label">표현 업그레이드 (내가 한 말 → 원어민 표현)</h2>
@@ -1088,7 +1151,7 @@
     <canvas id="captureCanvas" class="hidden"></canvas>
   </div>
 
-  <script type="module" src="js/app.js?v=20261124f"></script>
+  <script type="module" src="js/app.js?v=20261124g"></script>
   <script>
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
       window.addEventListener('load', () => {

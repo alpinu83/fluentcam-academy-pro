@@ -5,7 +5,7 @@ import {
   LEVELS,
   CORRECTION_MODES,
   buildSystemInstruction,
-} from './tutors.js?v=20261124d';
+} from './tutors.js?v=20261124g';
 import {
   SPEAKING_FOCUS_MODES,
   analyzeConversationSpeaking,
@@ -30,7 +30,7 @@ import {
   generateAiTextbook,
   generateStudyReport,
   reportToMarkdown,
-} from './feedback.js?v=20261124d';
+} from './feedback.js?v=20261124g';
 import {
   DEFAULT_SYNC_REPO,
   cleanGitHubToken,
@@ -43,8 +43,14 @@ import {
   cleanFamilyCode,
   createFirebaseCloudSync,
   generateFamilyCode,
+  getDeviceId,
   loadFirebaseSyncConfig,
-} from './firebase-sync.js?v=20261124f';
+} from './firebase-sync.js?v=20261124g';
+import {
+  ClassroomFocusGuard,
+  FOCUS_SENSITIVITY_CONFIG,
+  formatFocusElapsed,
+} from './focus-guard.js?v=20261124g';
 
 const STORAGE_KEYS = {
   API_KEY: 'fluentcam_gemini_api_key',
@@ -146,6 +152,9 @@ const state = {
   enableTools: true,
   noiseSensitivity: 'medium', // 'low' | 'medium' | 'high'
   turnWaitMode: 'patient', // 'normal' (1.5s) | 'patient' (2.4s) | 'extra' (3.4s)
+  focusGuardEnabled: true,
+  focusGuardSensitivity: 'normal', // 'gentle' | 'normal' | 'strict'
+  focusCameraAiEnabled: true,
   speechMode: 'auto', // 'auto' | 'ptt'
 
   // Preview modal
@@ -183,6 +192,10 @@ const state = {
   waveRafId: null,
   micMuted: false,
   camEnabled: true,
+  focusGuard: null,
+  focusBannerTimerId: null,
+  liveFocusHeartbeatId: null,
+  remoteLiveFocus: null,
 
   // 1011 / Wi-Fi / 10-min seamless auto-reconnect state
   isReconnecting: false,
@@ -215,6 +228,8 @@ const state = {
 const el = {
   topHeader: document.getElementById('topHeader'),
   brandHomeBtn: document.getElementById('brandHomeBtn'),
+  liveMonitorPill: document.getElementById('liveMonitorPill'),
+  liveMonitorPillLabel: document.getElementById('liveMonitorPillLabel'),
   installPwaBtn: document.getElementById('installPwaBtn'),
   cloudSyncBadgeBtn: document.getElementById('cloudSyncBadgeBtn'),
   cloudSyncBadgeLabel: document.getElementById('cloudSyncBadgeLabel'),
@@ -249,6 +264,9 @@ const el = {
   parentTabEdu: document.getElementById('parentTabEdu'),
   parentTabDash: document.getElementById('parentTabDash'),
   parentTabSystem: document.getElementById('parentTabSystem'),
+  parentLiveFocusCard: document.getElementById('parentLiveFocusCard'),
+  parentLiveFocusBadge: document.getElementById('parentLiveFocusBadge'),
+  parentLiveFocusBody: document.getElementById('parentLiveFocusBody'),
 
   levelTestView: document.getElementById('levelTestView'),
   reviewView: document.getElementById('reviewView'),
@@ -269,6 +287,9 @@ const el = {
   avatarModePills: document.getElementById('avatarModePills'),
   noiseGateCards: document.getElementById('noiseGateCards'),
   turnWaitCards: document.getElementById('turnWaitCards'),
+  focusGuardEnabledCheckbox: document.getElementById('focusGuardEnabledCheckbox'),
+  focusSensitivityCards: document.getElementById('focusSensitivityCards'),
+  focusCameraAiCheckbox: document.getElementById('focusCameraAiCheckbox'),
   speechModePills: document.getElementById('speechModePills'),
   liveModelSelect: document.getElementById('liveModelSelect'),
   customLiveModelInput: document.getElementById('customLiveModelInput'),
@@ -355,6 +376,10 @@ const el = {
   callTutorState: document.getElementById('callTutorState'),
   callPaceBadge: document.getElementById('callPaceBadge'),
   callNoiseGateBadge: document.getElementById('callNoiseGateBadge'),
+  callFocusBadge: document.getElementById('callFocusBadge'),
+  focusAlertBanner: document.getElementById('focusAlertBanner'),
+  focusAlertTitle: document.getElementById('focusAlertTitle'),
+  focusAlertDetail: document.getElementById('focusAlertDetail'),
   callStarCount: document.getElementById('callStarCount'),
   callStudentChip: document.getElementById('callStudentChip'),
   visionSharingBadge: document.getElementById('visionSharingBadge'),
@@ -441,6 +466,12 @@ const el = {
   reportLongestText: document.getElementById('reportLongestText'),
   reportHabitsBox: document.getElementById('reportHabitsBox'),
   reportHabitsList: document.getElementById('reportHabitsList'),
+  reportFocusCard: document.getElementById('reportFocusCard'),
+  reportFocusScoreBadge: document.getElementById('reportFocusScoreBadge'),
+  reportFocusKpis: document.getElementById('reportFocusKpis'),
+  reportFocusTimelineWrap: document.getElementById('reportFocusTimelineWrap'),
+  reportFocusTimelineList: document.getElementById('reportFocusTimelineList'),
+  reportFocusPraise: document.getElementById('reportFocusPraise'),
   correctionsCount: document.getElementById('correctionsCount'),
   reportCorrectionsList: document.getElementById('reportCorrectionsList'),
   reportVocabGrid: document.getElementById('reportVocabGrid'),
@@ -680,6 +711,9 @@ function saveSettings({ skipSync = false } = {}) {
       enableTools: state.enableTools,
       noiseSensitivity: state.noiseSensitivity,
       turnWaitMode: state.turnWaitMode,
+      focusGuardEnabled: state.focusGuardEnabled,
+      focusGuardSensitivity: state.focusGuardSensitivity,
+      focusCameraAiEnabled: state.focusCameraAiEnabled,
       speechMode: state.speechMode,
       liveModel: state.liveModel,
       customLiveModel: state.customLiveModel,
@@ -727,6 +761,11 @@ function restoreSettings() {
       if (typeof saved.enableTools === 'boolean') state.enableTools = saved.enableTools;
       if (['low', 'medium', 'high'].includes(saved.noiseSensitivity)) state.noiseSensitivity = saved.noiseSensitivity;
       if (['normal', 'patient', 'extra'].includes(saved.turnWaitMode)) state.turnWaitMode = saved.turnWaitMode;
+      if (typeof saved.focusGuardEnabled === 'boolean') state.focusGuardEnabled = saved.focusGuardEnabled;
+      if (['gentle', 'normal', 'strict'].includes(saved.focusGuardSensitivity)) {
+        state.focusGuardSensitivity = saved.focusGuardSensitivity;
+      }
+      if (typeof saved.focusCameraAiEnabled === 'boolean') state.focusCameraAiEnabled = saved.focusCameraAiEnabled;
       if (['auto', 'ptt'].includes(saved.speechMode)) state.speechMode = saved.speechMode;
       if (saved.liveModel) {
         state.liveModel =
@@ -1279,6 +1318,18 @@ function syncParentSystemControls() {
   });
   el.turnWaitCards?.querySelectorAll('.choice-card').forEach((c) => {
     c.classList.toggle('active', c.dataset.turnWait === state.turnWaitMode);
+  });
+  if (el.focusGuardEnabledCheckbox) {
+    el.focusGuardEnabledCheckbox.checked = state.focusGuardEnabled;
+  }
+  if (el.focusCameraAiCheckbox) {
+    el.focusCameraAiCheckbox.checked = state.focusCameraAiEnabled;
+    el.focusCameraAiCheckbox.disabled = !state.focusGuardEnabled;
+  }
+  el.focusSensitivityCards?.classList.toggle('is-disabled', !state.focusGuardEnabled);
+  el.focusSensitivityCards?.querySelectorAll('.choice-card').forEach((c) => {
+    c.classList.toggle('active', c.dataset.focusSens === state.focusGuardSensitivity);
+    c.disabled = !state.focusGuardEnabled;
   });
   el.speechModePills.querySelectorAll('.seg-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.speechMode === state.speechMode);
@@ -1860,6 +1911,7 @@ async function startCall() {
     state.audioPlayer = new PcmAudioPlayer((isSpeaking) => {
       el.tutorStageCard.classList.toggle('speaking', isSpeaking);
       state.captureWorkletNode?.port.postMessage({ tutorSpeaking: isSpeaking });
+      state.focusGuard?.notifyTutorSpeaking(isSpeaking);
       if (state.inCall) {
         el.callTutorState.textContent = isSpeaking ? '말하는 중...' : '듣고 있어요';
       }
@@ -1912,10 +1964,14 @@ async function startCall() {
         state.audioPlayer?.interrupt();
         finalizeActiveTurns();
       },
-      onInputTranscription: (text) => appendOrUpdateTurn('user', text),
+      onInputTranscription: (text) => {
+        appendOrUpdateTurn('user', text);
+        state.focusGuard?.notifyStudentActivity();
+      },
       onOutputTranscription: (text) => appendOrUpdateTurn('tutor', text),
       onTurnComplete: () => {
         finalizeActiveTurns();
+        state.focusGuard?.notifyTurnComplete();
         if (state.pendingGoAwayRotation && state.inCall && !state.isReconnecting) {
           state.pendingGoAwayRotation = false;
           scheduleSeamlessReconnect({ code: 1000, reason: 'goAway', proactive: true });
@@ -1971,6 +2027,7 @@ async function startCall() {
       if (!msg) return;
 
       if (msg.type === 'speechEnd') {
+        state.focusGuard?.notifyStudentVoiceEnd();
         if (msg.reason !== 'tutorStarted' && !state.isReconnecting) {
           state.liveClient?.sendAudioStreamEnd();
         }
@@ -2004,7 +2061,10 @@ async function startCall() {
       }
 
       if (msg.type === 'pcm' && msg.buffer && !state.micMuted && !state.isReconnecting) {
-        if (!msg.inPause) state.studentSpeakingMs += 100;
+        if (!msg.inPause) {
+          state.studentSpeakingMs += 100;
+          state.focusGuard?.notifyStudentActivity();
+        }
         state.liveClient?.sendAudioPcmBuffer(msg.buffer);
       }
     };
@@ -2025,6 +2085,13 @@ async function startCall() {
       const elapsed = Math.floor((Date.now() - state.callStartMs) / 1000);
       el.callTimer.textContent = formatDuration(elapsed);
     }, 1000);
+
+    // Start Free On-Device Classroom Focus Guard + Real-Time Parent Presence
+    startClassroomFocusGuard({
+      studentName,
+      tutor,
+      topicLabel: getLessonTitleLabel(),
+    });
 
     // iPad/iOS Guard: never spam fast 1.2s JPEG frames on iPad (triggers Gemini Live 1011 audio+video disconnect)
     const effectiveVideoIntervalMs = isIpadOrIos
@@ -2303,8 +2370,154 @@ function scheduleSeamlessReconnect({ code = 1011, reason = '', proactive = false
   }, delayMs);
 }
 
+// ==================== CLASSROOM FOCUS GUARD & LIVE PARENT MONITOR ====================
+function showFocusAlertBanner({ type, title, detail }) {
+  if (!el.focusAlertBanner) return;
+  el.focusAlertBanner.classList.remove('hidden', 'is-danger', 'is-warn');
+  el.focusAlertBanner.classList.add(type === 'tab_away' || type === 'away_from_cam' ? 'is-danger' : 'is-warn');
+  if (el.focusAlertTitle) el.focusAlertTitle.textContent = title || '👀 수업에 집중해 볼까요?';
+  if (el.focusAlertDetail) el.focusAlertDetail.textContent = detail || '';
+  clearTimeout(state.focusBannerTimerId);
+  state.focusBannerTimerId = setTimeout(() => {
+    el.focusAlertBanner?.classList.add('hidden');
+  }, 5500);
+}
+
+function updateCallFocusBadge(status) {
+  if (!el.callFocusBadge) return;
+  if (!state.focusGuardEnabled || !status || status.focusState === 'off') {
+    el.callFocusBadge.classList.add('hidden');
+    return;
+  }
+  el.callFocusBadge.classList.remove('hidden', 'focus-warn', 'focus-danger', 'focus-ok');
+  const st = status.focusState;
+  const camTag = status.cameraAiStatus === 'active' ? '·AI' : '';
+  if (st === 'tab_away' || st === 'away_from_cam') {
+    el.callFocusBadge.classList.add('focus-danger');
+    el.callFocusBadge.textContent = `⚠️ ${status.statusText}`;
+  } else if (st === 'look_away' || st === 'silence') {
+    el.callFocusBadge.classList.add('focus-warn');
+    el.callFocusBadge.textContent = `👀 ${status.statusText}`;
+  } else {
+    el.callFocusBadge.classList.add('focus-ok');
+    el.callFocusBadge.textContent = `🛡️ 집중 ${status.score}점${camTag}`;
+  }
+}
+
+function buildLivePresencePayload({ studentName, tutorName, topicLabel, status }) {
+  return {
+    active: true,
+    studentId: state.activeStudentId,
+    studentName,
+    tutorName,
+    topicLabel,
+    focusState: status?.focusState || 'focused',
+    statusText: status?.statusText || '수업 집중 중',
+    focusScore: typeof status?.score === 'number' ? status.score : 100,
+    alertCount: typeof status?.totalAlerts === 'number' ? status.totalAlerts : 0,
+    cameraAiActive: status?.cameraAiStatus === 'active',
+    latestEvent: status?.latestEvent || null,
+    startedAt: state.callStartMs || Date.now(),
+  };
+}
+
+function startClassroomFocusGuard({ studentName, tutor, topicLabel }) {
+  stopClassroomFocusGuard({ clearRemote: false });
+
+  let latestStatus = {
+    focusState: state.focusGuardEnabled ? 'focused' : 'off',
+    statusText: state.focusGuardEnabled ? '수업 집중 중' : '집중 가드 꺼짐',
+    score: 100,
+    totalAlerts: 0,
+    cameraAiStatus: 'off',
+    latestEvent: null,
+  };
+
+  const guard = new ClassroomFocusGuard({
+    enabled: state.focusGuardEnabled,
+    sensitivity: state.focusGuardSensitivity,
+    cameraAiEnabled: state.focusCameraAiEnabled,
+    studentName,
+    getVideoEl: () => el.callUserVideo,
+    isCamEnabled: () => state.camEnabled,
+    isCallActive: () => state.inCall,
+    isReconnecting: () => state.isReconnecting,
+    isTutorSpeaking: () => Boolean(state.audioPlayer?.isSpeaking),
+    onUiBanner: (info) => showFocusAlertBanner(info),
+    onStatusChange: (status) => {
+      latestStatus = status;
+      updateCallFocusBadge(status);
+      if (state.inCall && firebaseSync) {
+        firebaseSync.publishLiveFocusStatus(
+          buildLivePresencePayload({
+            studentName,
+            tutorName: tutor.name,
+            topicLabel,
+            status,
+          }),
+          { keepalive: status.focusState === 'tab_away' }
+        );
+      }
+    },
+    onAiNudge: (promptText) => {
+      if (state.inCall && !state.isReconnecting && state.liveClient) {
+        state.liveClient.sendTextTurn(promptText);
+      }
+    },
+  });
+
+  state.focusGuard = guard;
+  guard.start();
+
+  // Publish initial active presence + gentle 25s heartbeat so parent device sees live elapsed time
+  if (firebaseSync) {
+    firebaseSync.publishLiveFocusStatus(
+      buildLivePresencePayload({
+        studentName,
+        tutorName: tutor.name,
+        topicLabel,
+        status: latestStatus,
+      })
+    );
+    state.liveFocusHeartbeatId = setInterval(() => {
+      if (!state.inCall) return;
+      firebaseSync.publishLiveFocusStatus(
+        buildLivePresencePayload({
+          studentName,
+          tutorName: tutor.name,
+          topicLabel,
+          status: latestStatus,
+        })
+      );
+    }, 25000);
+  }
+}
+
+function stopClassroomFocusGuard({ clearRemote = true, keepalive = false } = {}) {
+  if (state.liveFocusHeartbeatId) {
+    clearInterval(state.liveFocusHeartbeatId);
+    state.liveFocusHeartbeatId = null;
+  }
+  if (state.focusBannerTimerId) {
+    clearTimeout(state.focusBannerTimerId);
+    state.focusBannerTimerId = null;
+  }
+  el.focusAlertBanner?.classList.add('hidden');
+  el.callFocusBadge?.classList.add('hidden');
+
+  if (state.focusGuard) {
+    state.focusGuard.stop();
+    state.focusGuard = null;
+  }
+  if (clearRemote && firebaseSync) {
+    firebaseSync.clearLiveFocusStatus({ keepalive });
+  }
+}
+
 async function teardownCallResources() {
+  const wasInCall = state.inCall;
   state.inCall = false;
+  stopClassroomFocusGuard({ clearRemote: wasInCall });
   state.isReconnecting = false;
   state.pendingGoAwayRotation = false;
   state.reconnectAttempts = 0;
@@ -2365,6 +2578,7 @@ async function endCall() {
     .map((t) => ({ role: t.role, text: (t.text || '').trim() }))
     .filter((t) => t.text.length > 0);
   const speakingStats = analyzeConversationSpeaking(cleanTranscript);
+  const focusStats = state.focusGuard ? state.focusGuard.getSummary() : null;
 
   const tutor = getSelectedTutor();
   const studentName = getStudentDisplayName();
@@ -2399,6 +2613,7 @@ async function endCall() {
       levelLabel,
       durationSec,
       speakingStats,
+      focusStats,
     });
   } catch (err) {
     console.error('Study report error:', err);
@@ -2441,6 +2656,7 @@ async function endCall() {
     studentTalkPct,
     starsEarned,
     speakingStats,
+    focusStats,
     transcript: cleanTranscript,
     report: reportData,
   };
@@ -2651,6 +2867,58 @@ function renderReportView(session) {
     }
   }
 
+  // Classroom Focus Guard Report Card
+  const fs = session.focusStats;
+  if (el.reportFocusCard) {
+    if (fs && fs.enabled) {
+      el.reportFocusCard.classList.remove('hidden');
+      const scoreClass = fs.score >= 85 ? 'synced' : fs.score >= 70 ? 'syncing' : 'error';
+      el.reportFocusScoreBadge.className = `gh-status-badge ${scoreClass}`;
+      el.reportFocusScoreBadge.textContent = `${fs.score}점 · ${fs.gradeLabel || '집중 분석'}`;
+
+      el.reportFocusKpis.innerHTML = `
+        <div class="speaking-kpi-tile">
+          <span>다른 앱·화면 이탈</span>
+          <strong>${fs.tabAwayCount || 0}회</strong>
+          <small>누적 이탈 ${fs.tabAwayTotalSec || 0}초</small>
+        </div>
+        <div class="speaking-kpi-tile">
+          <span>자리 이탈 (카메라 밖)</span>
+          <strong>${fs.camAwayCount || 0}회</strong>
+          <small>${fs.cameraAiUsed ? '온디바이스 AI 감지' : '카메라 AI 미사용'}</small>
+        </div>
+        <div class="speaking-kpi-tile">
+          <span>시선·고개 이탈</span>
+          <strong>${fs.lookAwayCount || 0}회</strong>
+          <small>민감도: ${escapeHtml(fs.sensitivityLabel || '보통')}</small>
+        </div>
+        <div class="speaking-kpi-tile">
+          <span>긴 무응답 알림</span>
+          <strong>${fs.silenceCount || 0}회</strong>
+          <small>선생님 재집중 유도</small>
+        </div>
+      `;
+
+      const evs = Array.isArray(fs.events) ? fs.events : [];
+      if (evs.length > 0) {
+        el.reportFocusTimelineWrap.classList.remove('hidden');
+        el.reportFocusPraise.classList.add('hidden');
+        el.reportFocusTimelineList.innerHTML = evs
+          .map(
+            (ev) =>
+              `<li><span class="mono focus-ev-time">${formatFocusElapsed(ev.elapsedSec)}</span> <strong>${escapeHtml(ev.label)}</strong> <span>${escapeHtml(ev.detail || '')}</span></li>`
+          )
+          .join('');
+      } else {
+        el.reportFocusTimelineWrap.classList.add('hidden');
+        el.reportFocusPraise.classList.remove('hidden');
+        el.reportFocusPraise.textContent = '🎉 수업 내내 다른 화면으로 빠지지 않고 선생님과 훌륭하게 집중했어요!';
+      }
+    } else {
+      el.reportFocusCard.classList.add('hidden');
+    }
+  }
+
   const corrections = Array.isArray(r.corrections) ? r.corrections : [];
   el.correctionsCount.textContent = `${corrections.length}개 제안`;
   el.reportCorrectionsList.innerHTML = corrections.length
@@ -2709,6 +2977,21 @@ function openSampleReport() {
         durationLabel: '12:05',
         studentTalkPct: 62,
         starsEarned: 4,
+        focusStats: {
+          enabled: true,
+          sensitivity: 'normal',
+          sensitivityLabel: '보통 (권장)',
+          cameraAiUsed: true,
+          score: 95,
+          gradeLabel: '최상 집중',
+          totalAlerts: 1,
+          tabAwayCount: 0,
+          tabAwayTotalSec: 0,
+          camAwayCount: 0,
+          lookAwayCount: 1,
+          silenceCount: 0,
+          events: [{ type: 'look_away', label: '고개 돌림 · 딴짓 감지', detail: '10초 이상 시선 이탈', elapsedSec: 392 }],
+        },
         transcript: [
           { role: 'tutor', text: 'In 2050, would you prefer an AI robot teacher or a human teacher?' },
           { role: 'user', text: 'Human teacher.' },
@@ -2749,6 +3032,21 @@ function openSampleReport() {
         durationLabel: '09:00',
         studentTalkPct: 58,
         starsEarned: 3,
+        focusStats: {
+          enabled: true,
+          sensitivity: 'normal',
+          sensitivityLabel: '보통 (권장)',
+          cameraAiUsed: true,
+          score: 100,
+          gradeLabel: '최상 집중',
+          totalAlerts: 0,
+          tabAwayCount: 0,
+          tabAwayTotalSec: 0,
+          camAwayCount: 0,
+          lookAwayCount: 0,
+          silenceCount: 0,
+          events: [],
+        },
         transcript: [
           { role: 'tutor', text: 'Look at Page 1! What is the cute little penguin wearing?' },
           { role: 'user', text: 'Goggles!' },
@@ -3059,6 +3357,56 @@ function bindEvents() {
       const cfg = TURN_WAIT_CONFIG[state.turnWaitMode] || TURN_WAIT_CONFIG.patient;
       showToast(`아이 대답 기다리는 시간을 [${cfg.label}]로 설정했어요.`);
     });
+  });
+
+  el.focusGuardEnabledCheckbox?.addEventListener('change', () => {
+    state.focusGuardEnabled = el.focusGuardEnabledCheckbox.checked;
+    saveSettings();
+    syncParentSystemControls();
+    showToast(
+      state.focusGuardEnabled
+        ? '🛡️ 수업 집중 가드를 켰어요 (딴짓·화면 이탈 시 AI 선생님 제지)'
+        : '수업 집중 가드를 껐어요.'
+    );
+  });
+
+  el.focusSensitivityCards?.querySelectorAll('.choice-card').forEach((card) => {
+    card.addEventListener('click', () => {
+      if (!state.focusGuardEnabled) return;
+      state.focusGuardSensitivity = card.dataset.focusSens;
+      saveSettings();
+      syncParentSystemControls();
+      const cfg = FOCUS_SENSITIVITY_CONFIG[state.focusGuardSensitivity] || FOCUS_SENSITIVITY_CONFIG.normal;
+      showToast(`수업 집중 가드 민감도를 [${cfg.label}]로 설정했어요.`);
+    });
+  });
+
+  el.focusCameraAiCheckbox?.addEventListener('change', () => {
+    state.focusCameraAiEnabled = el.focusCameraAiCheckbox.checked;
+    saveSettings();
+    syncParentSystemControls();
+    showToast(
+      state.focusCameraAiEnabled
+        ? '온디바이스 카메라 얼굴·시선 이탈 감지를 켰어요 (API 토큰 0)'
+        : '카메라 얼굴 감지를 껐어요 (화면 이탈·무응답 감지는 계속 작동)'
+    );
+  });
+
+  el.liveMonitorPill?.addEventListener('click', () => {
+    if (state.parentUnlocked) {
+      switchView('parent');
+      setParentTab('dash');
+      el.parentLiveFocusCard?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      openPinModal();
+      showToast('부모 관리 PIN 입력 후 2번 탭에서 실시간 집중 상태를 자세히 볼 수 있어요.', 3200);
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    if (state.inCall) {
+      stopClassroomFocusGuard({ clearRemote: true, keepalive: true });
+    }
   });
 
   el.speechModePills.querySelectorAll('.seg-btn').forEach((btn) => {
@@ -3548,10 +3896,86 @@ function renderCloudSyncStatusUi(status) {
   }
 }
 
+function renderRemoteLiveFocusUi(remoteData) {
+  state.remoteLiveFocus = remoteData && typeof remoteData === 'object' ? remoteData : null;
+  const d = state.remoteLiveFocus;
+  const now = Date.now();
+  const isFresh = Boolean(d && d.active && d.updatedAt && now - Number(d.updatedAt) < 95000);
+  const isOtherDevice = Boolean(isFresh && d.deviceId && d.deviceId !== getDeviceId());
+
+  // 1. Header compact pill (shown when another family device is in class and this device is NOT in call)
+  if (el.liveMonitorPill && el.liveMonitorPillLabel) {
+    if (isOtherDevice && !state.inCall) {
+      const st = d.focusState || 'focused';
+      const isAlert = st === 'tab_away' || st === 'away_from_cam';
+      const isWarn = st === 'look_away' || st === 'silence';
+      el.liveMonitorPill.classList.remove('hidden', 'is-alert', 'is-warn', 'is-ok');
+      el.liveMonitorPill.classList.add(isAlert ? 'is-alert' : isWarn ? 'is-warn' : 'is-ok');
+      const name = d.studentName || '아이';
+      el.liveMonitorPillLabel.textContent = isAlert
+        ? `⚠️ ${name} · ${d.statusText || '화면 이탈!'}`
+        : isWarn
+          ? `👀 ${name} · ${d.statusText || '집중 주의'}`
+          : `🟢 ${name} 수업 중 · 집중 ${d.focusScore ?? 100}점`;
+    } else {
+      el.liveMonitorPill.classList.add('hidden');
+    }
+  }
+
+  // 2. Parent Dashboard Tab 2 Live Monitor Card
+  if (el.parentLiveFocusCard && el.parentLiveFocusBadge && el.parentLiveFocusBody) {
+    if (!isFresh) {
+      el.parentLiveFocusBadge.className = 'gh-status-badge disconnected';
+      el.parentLiveFocusBadge.textContent = '대기 중';
+      el.parentLiveFocusBody.innerHTML =
+        '<p class="status-text" style="margin:0;">현재 진행 중인 화상영어 수업이 없습니다. 아이 기기에서 수업을 시작하면 집중 점수·화면 이탈·시선 이탈 상태가 이곳에 실시간 표시됩니다.</p>';
+      return;
+    }
+
+    const st = d.focusState || 'focused';
+    const isAlert = st === 'tab_away' || st === 'away_from_cam';
+    const isWarn = st === 'look_away' || st === 'silence';
+    el.parentLiveFocusBadge.className = `gh-status-badge ${isAlert ? 'error' : isWarn ? 'syncing' : 'synced'}`;
+    el.parentLiveFocusBadge.textContent = isAlert
+      ? `⚠️ ${d.statusText || '이탈 감지'}`
+      : isWarn
+        ? `👀 ${d.statusText || '주의 필요'}`
+        : `🟢 ${d.statusText || '수업 집중 중'}`;
+
+    const elapsedMin = Math.max(0, Math.floor((now - (Number(d.startedAt) || now)) / 60000));
+    const latestEv = d.latestEvent
+      ? `<div class="live-focus-last-ev">최근 알림: <strong>${escapeHtml(d.latestEvent.label)}</strong> (${escapeHtml(d.latestEvent.detail || '')})</div>`
+      : '';
+
+    el.parentLiveFocusBody.innerHTML = `
+      <div class="live-focus-grid">
+        <div class="live-focus-item">
+          <span>수업 중인 학생</span>
+          <strong>${escapeHtml(d.studentName || '학생')} · ${escapeHtml(d.tutorName || 'AI')} 선생님</strong>
+          <small>${escapeHtml(d.topicLabel || '화상영어 수업')} (${elapsedMin}분 경과)</small>
+        </div>
+        <div class="live-focus-item">
+          <span>실시간 집중 점수</span>
+          <strong>${d.focusScore ?? 100} / 100</strong>
+          <small>누적 주의 알림 ${d.alertCount || 0}회${d.cameraAiActive ? ' · 카메라 AI 활성' : ''}</small>
+        </div>
+      </div>
+      ${latestEv}
+    `;
+  }
+}
+
+setInterval(() => {
+  if (state.remoteLiveFocus?.active) {
+    renderRemoteLiveFocusUi(state.remoteLiveFocus);
+  }
+}, 15000);
+
 firebaseSync = createFirebaseCloudSync({
   getLocalSnapshot: getLocalCloudSnapshot,
   applyMergedSnapshot: applyCloudMergedSnapshot,
   onStatusChange: renderFirebaseSyncStatusUi,
+  onLiveFocusChange: renderRemoteLiveFocusUi,
   requestCloudPinPrompt: async () =>
     window.prompt(
       '가족 클라우드에 암호화 저장된 Gemini API 키를 복호화하려면 부모 관리 4자리 PIN을 입력해 주세요:',
@@ -3917,6 +4341,7 @@ async function init() {
   }
 
   if (fbCfg.enabled) {
+    firebaseSync.fetchLiveFocusStatus();
     firebaseSync.syncNow({ pushIfChanged: true, silent: true }).then((res) => {
       if (res?.ok && fbCfg.source === 'link') {
         showToast('⚡ 가족 기기 연결 완료! 이제 KidQuest처럼 자동 동기화됩니다.', 4200);

@@ -173,6 +173,7 @@ export async function generateStudyReport({
   levelLabel,
   durationSec,
   speakingStats = null,
+  focusStats = null,
 }) {
   const dialogue = formatTranscriptForPrompt(transcript, 120);
   const mins = Math.max(1, Math.round(durationSec / 60));
@@ -187,12 +188,20 @@ export async function generateStudyReport({
 - Longest utterance: "${speakingStats.longestUtterance}"`
       : '';
 
+  const focusBlock =
+    focusStats && focusStats.enabled
+      ? `\nClassroom Focus Guard Summary (on-device):
+- Focus Score: ${focusStats.score}/100 (${focusStats.gradeLabel})
+- Screen/App switches away: ${focusStats.tabAwayCount} (${focusStats.tabAwayTotalSec}s total)
+- Stepped away from camera: ${focusStats.camAwayCount}, Looking away: ${focusStats.lookAwayCount}, Long silence alerts: ${focusStats.silenceCount}`
+      : '';
+
   const prompt = `You are a warm, expert English speaking coach writing a post-lesson diagnostic report in Korean for BOTH the elementary student ("${studentName}") and their parents.
 Session metadata:
 - Student: ${studentName} (${levelLabel})
 - Tutor: ${tutor.name} (${tutor.accentLabel})
 - Lesson / Textbook: ${topicLabel}
-- Call Duration: approx. ${mins} min${metricsBlock}
+- Call Duration: approx. ${mins} min${metricsBlock}${focusBlock}
 
 Conversation transcript:
 ${dialogue}
@@ -268,6 +277,25 @@ export function reportToMarkdown(session) {
       ...(st.longestUtterance ? [`- 오늘의 최장 영어 문장: *"${st.longestUtterance}"*`] : []),
       ''
     );
+  }
+
+  const fs = session.focusStats;
+  if (fs && fs.enabled) {
+    lines.push(
+      '## 수업 집중도 분석 (온디바이스 집중 가드)',
+      `- 집중도 점수: **${fs.score}/100 (${fs.gradeLabel || ''})**`,
+      `- 다른 앱·화면 이탈: **${fs.tabAwayCount || 0}회** (${fs.tabAwayTotalSec || 0}초)`,
+      `- 자리 이탈 (카메라 밖): **${fs.camAwayCount || 0}회** · 시선 이탈: **${fs.lookAwayCount || 0}회** · 무응답 알림: **${fs.silenceCount || 0}회**`,
+      ''
+    );
+    if (Array.isArray(fs.events) && fs.events.length > 0) {
+      fs.events.slice(0, 10).forEach((ev) => {
+        const m = String(Math.floor((ev.elapsedSec || 0) / 60)).padStart(2, '0');
+        const s = String((ev.elapsedSec || 0) % 60).padStart(2, '0');
+        lines.push(`  - \`${m}:${s}\` ${ev.label} (${ev.detail || ''})`);
+      });
+      lines.push('');
+    }
   }
 
   if (r) {
